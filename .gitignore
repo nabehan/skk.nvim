@@ -1,11 +1,4 @@
-# テスト実行時に取得する plenary.nvim 等の依存物
-/.tests/
-/deps/
-
-# 辞書ファイル（大きい・配布物なので取得スクリプトで別途落とす想定）
-/dict/
-*.jisyo
-
-# エディタ・OS由来
 .DS_Store
 *.swp
+/tests/plenary/
+/.luarc.json
