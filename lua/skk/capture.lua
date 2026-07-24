@@ -33,6 +33,8 @@ local EXTRA_TARGET_CHARS = {
   ["-"] = true,
   ["."] = true,
   [","] = true,
+  ["["] = true,
+  ["]"] = true,
 }
 
 --- 変換対象にする1文字かどうか（半角小文字アルファベット + 上記の記号）
