@@ -73,6 +73,32 @@ require("skk").setup({
 
 挿入モードで `<C-j>` を押すと ON/OFF がトグルされる（`:SkkToggle` コマンドでも可）。ON の状態でローマ字を打つとかなに変換される。
 
+## 開発時の動作確認
+
+普段の Neovim 設定を汚さずに、このリポジトリ単体で動作確認できる最小 init（`skk_test_init.lua`）を同梱している。
+
+```bash
+nvim -u ./skk_test_init.lua
+```
+
+起動後、挿入モードで `<C-j>` → `ka`・`kka`・`kyou` などを打って変換されるか確認する。
+
+## テスト
+
+[plenary.nvim](https://github.com/nvim-lua/plenary.nvim) の busted 互換ランナーで `tests/*_spec.lua` を実行する。`make test` で plenary.nvim を `.tests/site/pack/deps/start/` に自動取得してから実行するので、個人の Neovim 環境に plenary.nvim が入っているかどうかに関わらず動く。
+
+```bash
+make test
+```
+
+手動で実行したい場合、または既に別の場所に plenary.nvim がある場合は `PLENARY_DIR` 環境変数で指定できる。
+
+```bash
+PLENARY_DIR=~/.local/share/nvim/lazy/plenary.nvim \
+  nvim --headless --noplugin -u tests/minimal_init.lua \
+  -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
+```
+
 ## ロードマップ
 
 1. ~~ローマ字 → かな変換エンジン~~ ✅
