@@ -27,11 +27,25 @@ local enabled = false
 local context = Context.new()
 local ns_id = nil
 
---- 変換対象にする1文字かどうか（今のところ半角小文字のみ）
+-- 半角小文字アルファベット以外で変換対象にする記号
+-- （kana_table.lua で M["-"] / M["."] / M[","] を定義しているのに合わせる）
+local EXTRA_TARGET_CHARS = {
+  ["-"] = true,
+  ["."] = true,
+  [","] = true,
+}
+
+--- 変換対象にする1文字かどうか（半角小文字アルファベット + 上記の記号）
 ---@param key string
 ---@return boolean
 local function is_target_key(key)
-  return #key == 1 and key:match("%l") ~= nil
+  if #key ~= 1 then
+    return false
+  end
+  if key:match("%l") then
+    return true
+  end
+  return EXTRA_TARGET_CHARS[key] == true
 end
 
 --- 現在のカーソル位置の直前から `byte_len` バイトを削除し、

@@ -34,6 +34,22 @@ describe("kana conversion (basic)", function()
   end)
 end)
 
+describe("kana conversion (symbols)", function()
+  -- capture.lua の is_target_key が %l（英小文字）しか対象にしておらず、
+  -- kana_table.lua に定義済みのこれらの記号がキャプチャ層でフィルタされて
+  -- 変換まで届かない不具合があった。変換エンジン自体は最初から正しかった
+  -- ことを確認するための回帰テスト。
+  it("long vowel mark, period, comma", function()
+    convert("-", "ー")
+    convert(".", "。")
+    convert(",", "、")
+  end)
+
+  it("symbol mixed with regular morae", function()
+    convert("ka-", "かー")
+  end)
+end)
+
 describe("kana conversion (sokuon / っ)", function()
   it("doubled consonant produces っ", function()
     convert("kka", "っか")
