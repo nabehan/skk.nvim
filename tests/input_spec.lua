@@ -50,6 +50,23 @@ describe("kana conversion (symbols)", function()
   it("symbol mixed with regular morae", function()
     convert("ka-", "かー")
   end)
+
+  it("z + symbol -> 全角記号", function()
+    convert("z(", "（")
+    convert("z)", "）")
+    convert("z ", "　")
+  end)
+
+  it("単独の ( ) スペースは半角のまま素通しする", function()
+    -- capture.lua で "(" ")" " " を EXTRA_TARGET_CHARS に加えた際、
+    -- z( / z) / z<space> を拾えるようにするための副作用で、単独の
+    -- "(" ")" " " まで「変換表にもprefixにも該当しない未対応の文字」
+    -- として誤って破棄されないよう、kana_table.lua に素通し用の
+    -- 恒等変換 (identity mapping) を用意している。
+    convert("(", "(")
+    convert(")", ")")
+    convert(" ", " ")
+  end)
 end)
 
 describe("kana conversion (small kana / 捨て仮名)", function()

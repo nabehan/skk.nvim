@@ -38,9 +38,6 @@ local M = {}
 local context = Context.new()
 local ns_id = nil
 
--- 物理的な <BS> キーの raw keycode。vim.on_key() の {key} と比較するために使う。
-local BS = vim.api.nvim_replace_termcodes("<BS>", true, false, true)
-
 -- ひらがな/カタカナモードで、確定したかなをどう表示するか。
 ---@type table<SkkMode, fun(s: string): string>
 local RENDERERS = {
@@ -59,6 +56,9 @@ local EXTRA_TARGET_CHARS = {
   [","] = true,
   ["["] = true,
   ["]"] = true,
+  ["("] = true,
+  [")"] = true,
+  [" "] = true,
 }
 
 ---@param key string
@@ -138,31 +138,6 @@ local function on_key(key, _typed)
     return
   end
 
-  -- 未確定のローマ字バッファがある状態で <BS> が来たら、内部状態と
-  -- 画面表示がずれないよう自分で1文字分だけ消費する。
-  --
-  -- 【これが無いとどうなるか（実際に踏んだバグ）】
-  -- <BS> は is_target_key に該当しないため、素通しすると Neovim
-  -- ネイティブの削除処理に委ねられる。その場合、画面上の未確定ローマ字
-  -- （例: "t"）は正しく消えるが、内部の context.buffer は "t" のまま
-  -- 更新されない。次のキー入力時、capture.lua は「まだ1バイト分の
-  -- 未確定文字が画面に残っているはず」という古い情報を元にカーソン
-  -- 直前の1バイトを削除してしまい、実際にそこにある確定済みの
-  -- マルチバイト文字（かな）の末尾バイトだけを削ってしまい、
-  -- 不正なバイト列（例: "か<e3><81>k"）に破壊してしまっていた。
-  if key == BS then
-    if context.buffer ~= "" then
-      -- context.buffer は常に半角ASCIIのローマ字断片なので、
-      -- 1文字 = 1バイトであることが保証されている。
-      context.buffer = context.buffer:sub(1, -2)
-      vim.schedule(function()
-        replace_before_cursor(1, "")
-      end)
-      return ""
-    end
-    return -- 未確定バッファが無ければ通常の <BS> に任せる
-  end
-
   if context.mode == "zenei" then
     if not is_printable_ascii(key) then
       return
@@ -184,6 +159,24 @@ local function on_key(key, _typed)
   end
 
   if not is_target_key(key) then
+    -- 未確定のローマ字が画面に literal 表示されている状態で、ローマ字
+    -- 入力の続きとして認識できないキー（<BS>/<Delete>/カーソル移動キー等）
+    -- が来た場合は、内部の追跡を諦めてリセットする。以降その文字列は
+    -- Neovim から見て「ただのプレーンテキスト」になり、ネイティブの
+    -- 処理（削除・カーソル移動）にそのまま委ねられる。
+    --
+    -- 【これが無いとどうなるか（実際に踏んだバグ）】
+    -- <BS> も <Delete> も is_target_key に該当しないため、素通しすると
+    -- Neovim ネイティブの処理に委ねられる。画面上の未確定ローマ字
+    -- （例: "t"）は正しく消えても、内部の context.buffer は "t" のまま
+    -- 更新されずに残ってしまう。次のキー入力時、capture.lua は
+    -- 「まだ1バイト分の未確定文字が画面に残っているはず」という
+    -- 古い情報を元にカーソル直前のバイトを削除してしまい、実際にそこに
+    -- ある確定済みのマルチバイト文字（かな）の末尾バイトだけを削って
+    -- しまい、不正なバイト列（例: "か<e3><81>k"）に破壊してしまっていた。
+    -- 個別のキーごとに対処するのではなく、この汎用的なリセットで
+    -- <BS>/<Delete>、そして今後遭遇する未知のキーもまとめて防ぐ。
+    context.buffer = ""
     return
   end
 

@@ -21,7 +21,32 @@ local RENDERERS = {
   kata = kana_util.to_katakana,
 }
 
+-- capture.lua の EXTRA_TARGET_CHARS と同じもの（テスト用に複製）
+local EXTRA_TARGET_CHARS = {
+  ["-"] = true,
+  ["."] = true,
+  [","] = true,
+  ["["] = true,
+  ["]"] = true,
+  ["("] = true,
+  [")"] = true,
+  [" "] = true,
+}
+
+local function is_target_key(key)
+  if #key ~= 1 then
+    return false
+  end
+  if key:match("%l") then
+    return true
+  end
+  return EXTRA_TARGET_CHARS[key] == true
+end
+
 --- lua/skk/capture.lua の on_key ロジックを、実際のバッファ操作なしで再現する。
+--- 打鍵列の中で "#" は、<BS>/<Delete> のような「ローマ字入力の続きとして
+--- 認識できないキー」の代わりとして扱う（内部バッファをリセットするだけで、
+--- 何も表示には追加しない）。
 ---@param mode SkkMode 開始モード
 ---@param input string 打鍵列（"l"/"q"/"L" はモード切替キーとして解釈する）
 ---@return string display 最終的にバッファへ反映されるべきテキスト
@@ -45,6 +70,10 @@ local function simulate(mode, input)
       end
       if target then
         context.mode = target
+      elseif key == "#" or not is_target_key(key) then
+        -- <BS>/<Delete> 等、追跡できないキー。内部バッファをリセットする
+        -- だけで、Neovim ネイティブの処理（削除等）に委ねる想定。
+        context.buffer = ""
       else
         Input.kanaInput(context, key)
         local confirmed = context:flush()
@@ -97,5 +126,32 @@ describe("zenei mode (L)", function()
     local display, mode = simulate("hira", "kanjiLhello world")
     assert.are.equal("かんじ" .. "ｈｅｌｌｏ　ｗｏｒｌｄ", display)
     assert.are.equal("zenei", mode)
+  end)
+end)
+
+describe("z + symbol (全角記号)", function()
+  it("z( / z) / z<space> が全角記号になる", function()
+    assert.are.equal("（", (simulate("hira", "z(")))
+    assert.are.equal("）", (simulate("hira", "z)")))
+    assert.are.equal("　", (simulate("hira", "z ")))
+  end)
+
+  it("z を経由しない単独の ( ) スペースは半角のまま", function()
+    assert.are.equal("(", (simulate("hira", "(")))
+    assert.are.equal(")", (simulate("hira", ")")))
+    assert.are.equal(" ", (simulate("hira", " ")))
+  end)
+end)
+
+describe("追跡できないキー（<BS>/<Delete> 相当、'#' で表現）", function()
+  it("未確定バッファがある状態で来ると、内部状態をリセットするだけで済む", function()
+    -- 「かき」まで確定 -> "t" タイプミス -> <BS>/<Delete> 相当でリセット -> "k"
+    -- 以前は、この直後の "k" が「まだ1バイト未確定文字が残っているはず」
+    -- という古い情報に基づいて確定済みの "き"（マルチバイト文字）を
+    -- 破壊してしまう不具合があった。リセットされていれば "き" の直後に
+    -- 素直に "k" が続くだけになる。
+    local display, mode = simulate("hira", "kakit#k")
+    assert.are.equal("かき" .. "k", display)
+    assert.are.equal("hira", mode)
   end)
 end)
