@@ -60,6 +60,7 @@ add_youon_auo("sy", "しゃ", "しゅ", "しょ")
 add_row("z", { "ざ", "じ", "ず", "ぜ", "ぞ" })
 M["ji"] = "じ"
 add_youon_auo("j", "じゃ", "じゅ", "じょ")
+add_youon_auo("jy", "じゃ", "じゅ", "じょ")
 add_youon_auo("zy", "じゃ", "じゅ", "じょ")
 
 -- た行（ti/chi, tu/tsu どちらも受け付ける）
