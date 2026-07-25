@@ -67,8 +67,15 @@ describe("kana conversion (small kana / 捨て仮名)", function()
     convert("xyo", "ょ")
   end)
 
+  it("xtu produces small っ directly (促音の明示指定)", function()
+    convert("xtu", "っ")
+  end)
+
   it("combines with regular morae", function()
-    convert("kixixtu", "きぃつ")
+    -- xtu を追加する前は "xtu" がテーブルに無く、誤入力からの回復ルールで
+    -- x が捨てられて "tu" -> "つ" になっていた（きぃつ）。
+    -- xtu が明示的に「っ」に変換されるようになったので、期待値も変わる。
+    convert("kixixtu", "きぃっ")
   end)
 end)
 

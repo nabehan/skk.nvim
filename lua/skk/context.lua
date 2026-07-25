@@ -5,13 +5,23 @@
 --
 -- fixed:  確定済みの出力（かな）。output() が呼ばれるまでここに積まれる。
 -- buffer: まだかなに変換しきれていないローマ字の断片（例: "k" だけ打った直後）。
--- mode:   将来 かな/カナ/変換待ち(▽/▼) 等を切り替えるためのモード。
---         現時点では "hira"（ひらがな直接入力）のみ実装する。
+-- mode:   入力モード。4つ:
+--           "ascii"   半角英数（SKK が事実上 OFF の状態。直接入力）
+--           "hira"    ひらがな
+--           "kata"    カタカナ
+--           "zenei"   全角英数
+--         モード切替は lua/skk/capture.lua が管理する。
+--         初期値は "ascii"（プラグイン読み込み直後は SKK が無効な状態）。
+--
+--         半角カナモードは検討したが、ターミナルエミュレーターの動作が
+--         不安定になる事例が確認されたため実装しない方針とした。
+
+---@alias SkkMode "ascii"|"hira"|"kata"|"zenei"
 
 ---@class SkkContext
 ---@field fixed string 確定済みの出力
 ---@field buffer string 未確定のローマ字断片
----@field mode "hira"|"kata"
+---@field mode SkkMode
 local Context = {}
 Context.__index = Context
 
@@ -20,7 +30,7 @@ function Context.new()
   return setmetatable({
     fixed = "",
     buffer = "",
-    mode = "hira",
+    mode = "ascii",
   }, Context)
 end
 
