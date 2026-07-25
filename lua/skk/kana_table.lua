@@ -26,93 +26,100 @@ local function add_row(consonant, kana_row)
   end
 end
 
--- 拗音（きゃ・きゅ・きょ 等）のうち、単一子音 + "ya/yu/yo" で作れるもの。
--- 例: add_youon("k", "きゃ", "きゅ", "きょ") -> "kya"/"kyu"/"kyo"
-local function add_youon(consonant, kya, kyu, kyo)
+-- 拗音（きゃ・きぃ・きゅ・きぇ・きょ 等）のうち、単一子音 + "ya/yi/yu/ye/yo" で作れるもの。
+-- 例: add_youon("k", "きゃ", "きぃ", "きゅ", "きぇ", "きょ") -> "kya"/"kyi"/"kyu"/"kye"/"kyo"
+local function add_youon(consonant, kya, kyi, kyu, kye, kyo)
   M[consonant .. "ya"] = kya
+  M[consonant .. "yi"] = kyi
   M[consonant .. "yu"] = kyu
+  M[consonant .. "ye"] = kye
   M[consonant .. "yo"] = kyo
 end
 
--- 拗音のうち、2文字の別綴りマーカー（sh/sy/ch/ty/zy 等）+ "a/u/o" で作るもの。
--- 例: add_youon_auo("sh", "しゃ", "しゅ", "しょ") -> "sha"/"shu"/"sho"
-local function add_youon_auo(base, a, u, o)
+-- 拗音のうち、2文字の別綴りマーカー（sh/sy/ch/ty/zy 等）+ "a/u/e/o" で作るもの。
+-- 例: add_youon_auo("sh", "しゃ", "しゅ", "しぇ", "しょ") -> "sha"/"shu"/"she"/"sho"
+local function add_youon_aueo(base, a, u, e, o)
   M[base .. "a"] = a
   M[base .. "u"] = u
+  M[base .. "e"] = e
   M[base .. "o"] = o
 end
 
 -- か行
 add_row("k", { "か", "き", "く", "け", "こ" })
-add_youon("k", "きゃ", "きゅ", "きょ")
+add_youon("k", "きゃ", "きぃ", "きゅ", "きぇ", "きょ")
 
 -- が行
 add_row("g", { "が", "ぎ", "ぐ", "げ", "ご" })
-add_youon("g", "ぎゃ", "ぎゅ", "ぎょ")
+add_youon("g", "ぎゃ", "ぎぃ", "ぎゅ", "ぎぇ", "ぎょ")
 
 -- さ行（si/shi どちらも受け付ける）
 add_row("s", { "さ", "し", "す", "せ", "そ" })
+add_youon("s", "しゃ", "しぃ", "しゅ", "しぇ", "しょ")
 M["shi"] = "し"
-add_youon_auo("sh", "しゃ", "しゅ", "しょ")
-add_youon_auo("sy", "しゃ", "しゅ", "しょ")
+add_youon_aueo("sh", "しゃ", "しゅ", "しぇ", "しょ")
 
 -- ざ行（zi/ji どちらも受け付ける）
 add_row("z", { "ざ", "じ", "ず", "ぜ", "ぞ" })
+add_youon("z", "じゃ", "じぃ", "じゅ", "じぇ", "じょ")
+add_youon("j", "じゃ", "じぃ", "じゅ", "じぇ", "じょ")
 M["ji"] = "じ"
-add_youon_auo("j", "じゃ", "じゅ", "じょ")
-add_youon_auo("jy", "じゃ", "じゅ", "じょ")
-add_youon_auo("zy", "じゃ", "じゅ", "じょ")
+add_youon_aueo("j", "じゃ", "じゅ", "じぇ", "じょ")
 
 -- た行（ti/chi, tu/tsu どちらも受け付ける）
 add_row("t", { "た", "ち", "つ", "て", "と" })
-M["chi"] = "ち"
+add_youon("t", "ちゃ", "ちぃ", "ちゅ", "ちぇ", "ちょ")
 M["tsu"] = "つ"
-add_youon_auo("ch", "ちゃ", "ちゅ", "ちょ")
-add_youon_auo("ty", "ちゃ", "ちゅ", "ちょ")
+M["chi"] = "ち"
+add_youon_aueo("ch", "ちゃ", "ちゅ", "ちぇ", "ちょ")
 
 -- だ行
 add_row("d", { "だ", "ぢ", "づ", "で", "ど" })
-add_youon("d", "ぢゃ", "ぢゅ", "ぢょ")
+add_youon("d", "ぢゃ", "ぢぃ", "ぢゅ", "ぢぇ", "ぢょ")
 
 -- な行
 add_row("n", { "な", "に", "ぬ", "ね", "の" })
-add_youon("n", "にゃ", "にゅ", "にょ")
+add_youon("n", "にゃ", "にぃ", "にゅ", "にぇ", "にょ")
 
 -- は行（hu/fu どちらも受け付ける）
 add_row("h", { "は", "ひ", "ふ", "へ", "ほ" })
-M["fu"] = "ふ"
-add_youon("h", "ひゃ", "ひゅ", "ひょ")
+add_youon("h", "ひゃ", "ひぃ", "ひゅ", "ひぇ", "ひょ")
 M["fa"] = "ふぁ"
 M["fi"] = "ふぃ"
+M["fu"] = "ふ"
 M["fe"] = "ふぇ"
 M["fo"] = "ふぉ"
 
 -- ば行
 add_row("b", { "ば", "び", "ぶ", "べ", "ぼ" })
-add_youon("b", "びゃ", "びゅ", "びょ")
+add_youon("b", "びゃ", "びぃ", "びゅ", "びぇ", "びょ")
 
 -- ぱ行
 add_row("p", { "ぱ", "ぴ", "ぷ", "ぺ", "ぽ" })
-add_youon("p", "ぴゃ", "ぴゅ", "ぴょ")
+add_youon("p", "ぴゃ", "ぴぃ", "ぴゅ", "ぴぇ", "ぴょ")
 
 -- ま行
 add_row("m", { "ま", "み", "む", "め", "も" })
-add_youon("m", "みゃ", "みゅ", "みょ")
+add_youon("m", "みゃ", "みぃ", "みゅ", "みぇ", "みょ")
 
--- や行（yi/ye は現代仮名遣いでは使わないため省略）
+-- や行
 M["ya"] = "や"
 M["yu"] = "ゆ"
+M["ye"] = "いぇ"
 M["yo"] = "よ"
 
 -- ら行
 add_row("r", { "ら", "り", "る", "れ", "ろ" })
-add_youon("r", "りゃ", "りゅ", "りょ")
+add_youon("r", "りゃ", "りぃ", "りゅ", "りぇ", "りょ")
 
 -- わ行（wu は使わず「う」を使うのが一般的なため含めない）
 M["wa"] = "わ"
 M["wi"] = "うぃ"
 M["we"] = "うぇ"
 M["wo"] = "を"
+
+-- ゔ行(v + 母音)
+add_row("v", { "ゔぁ", "ゔぃ", "ゔ", "ゔぇ", "ゔぉ" })
 
 -- 小文字かな
 M["xa"] = "ぁ"
