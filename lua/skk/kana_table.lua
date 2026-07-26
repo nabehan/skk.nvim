@@ -37,7 +37,7 @@ local function add_youon(consonant, kya, kyi, kyu, kye, kyo)
 end
 
 -- 拗音のうち、2文字の別綴りマーカー（sh/sy/ch/ty/zy 等）+ "a/u/e/o" で作るもの。
--- 例: add_youon_auo("sh", "しゃ", "しゅ", "しぇ", "しょ") -> "sha"/"shu"/"she"/"sho"
+-- 例: add_youon_aueo("sh", "しゃ", "しゅ", "しぇ", "しょ") -> "sha"/"shu"/"she"/"sho"
 local function add_youon_aueo(base, a, u, e, o)
   M[base .. "a"] = a
   M[base .. "u"] = u

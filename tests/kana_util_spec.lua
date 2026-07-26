@@ -32,6 +32,10 @@ describe("to_katakana", function()
     assert.are.equal("ー", U.to_katakana("ー"))
     assert.are.equal("、。「」", U.to_katakana("、。「」"))
   end)
+
+  it("ゔ行（v + 母音、kana_table.lua に追加された分）も変換できる", function()
+    assert.are.equal("ヴァヴィヴヴェヴォ", U.to_katakana("ゔぁゔぃゔゔぇゔぉ"))
+  end)
 end)
 
 describe("to_zenkaku_char", function()
