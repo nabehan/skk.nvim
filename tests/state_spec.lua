@@ -154,17 +154,14 @@ describe("state: 確定・キャンセル", function()
     dict.set_dict(parser.parse("かんじ /漢字/"))
   end)
 
-  it(
-    "▽状態で confirm すると読みをそのまま確定する（辞書検索していない場合）",
-    function()
-      state.start_midashi("hira", "u")
-      state.input("g")
-      state.input("o")
-      state.confirm()
-      assert.are.equal("うご", last_inserted_text())
-      assert.are.equal("idle", state.get_phase())
-    end
-  )
+  it("▽状態で confirm すると読みをそのまま確定する（辞書検索していない場合）", function()
+    state.start_midashi("hira", "u")
+    state.input("g")
+    state.input("o")
+    state.confirm()
+    assert.are.equal("うご", last_inserted_text())
+    assert.are.equal("idle", state.get_phase())
+  end)
 
   it("▼状態で confirm すると選択中の候補を確定する", function()
     state.start_midashi("hira", "k")

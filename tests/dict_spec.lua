@@ -40,13 +40,10 @@ describe("dict (phase 3: 単一辞書, okuri-nasi のみ)", function()
     assert.are.equal(0, #candidates)
   end)
 
-  it(
-    "has_okuri を間違えると見つからない（okuri-ari のキーを okuri-nasi として引かない）",
-    function()
-      local candidates = dict.lookup("うごk", false)
-      assert.are.equal(0, #candidates)
-    end
-  )
+  it("has_okuri を間違えると見つからない（okuri-ari のキーを okuri-nasi として引かない）", function()
+    local candidates = dict.lookup("うごk", false)
+    assert.are.equal(0, #candidates)
+  end)
 end)
 
 describe("dict (空の辞書)", function()
