@@ -12,11 +12,19 @@ local M = {}
 ---@class SkkSetupOpts
 ---@field enter_key string? 半角英数/全角英数 -> ひらがな。デフォルト "<C-j>"
 
+--- ▽/▼ 表示用のハイライトグループのデフォルトを定義する。
+--- 既にユーザーやカラースキームが定義済みなら上書きしない (default = true)。
+local function setup_highlights()
+  vim.api.nvim_set_hl(0, "SkkHenkanMidashi", { default = true, link = "Comment" })
+  vim.api.nvim_set_hl(0, "SkkHenkanCandidate", { default = true, link = "IncSearch" })
+end
+
 ---@param opts SkkSetupOpts|nil
 function M.setup(opts)
   opts = opts or {}
   local enter_key = opts.enter_key or "<C-j>"
 
+  setup_highlights()
   capture.setup()
 
   local function notify_mode()
