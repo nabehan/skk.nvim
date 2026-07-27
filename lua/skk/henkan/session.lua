@@ -1,0 +1,154 @@
+-- lua/skk/henkan/session.lua
+--
+-- 1回の変換セッション（▽読み入力〜▼候補選択）のデータを保持する。
+--
+-- 【phase 3 時点のスコープ】送りなし変換のみを対象とする。送りあり関連の
+-- フィールド・メソッド（okuri_consonant 等）は将来のフェーズ（実装順序4）
+-- のために用意してあるが、まだ capture.lua からは呼ばれない。
+--
+-- 読み自体のローマ字→かな変換には、直接入力（lua/skk/context.lua +
+-- lua/skk/input.lua）と全く同じ部品をそのまま再利用する。実バッファには
+-- 一切書き込まず、変換結果は session.reading に文字列として積むだけ。
+
+local Context = require("skk.context")
+local Input = require("skk.input")
+local kana_util = require("skk.kana_util")
+
+---@class SkkHenkanSession
+---@field reading string 確定済みの読み（ひらがな）。辞書検索キーの本体。
+---@field okuri_consonant string|nil 送り開始点のローマ字子音。nil なら送りなし。
+---@field okuri_kana string|nil 確定した送り仮名（ひらがな）。
+---@field source_mode "hira"|"kata" このセッションを開始したモード
+---@field candidates string[] 辞書検索結果の候補一覧
+---@field index integer 現在選択中の候補（1-indexed）。0 は未検索。
+---@field reading_input SkkContext 読み入力用の変換エンジン状態（内部専用）
+---@field okuri_input SkkContext 送り仮名入力用の変換エンジン状態（内部専用）
+local Session = {}
+Session.__index = Session
+
+---@param source_mode "hira"|"kata"
+---@return SkkHenkanSession
+function Session.new(source_mode)
+  return setmetatable({
+    reading = "",
+    okuri_consonant = nil,
+    okuri_kana = nil,
+    source_mode = source_mode,
+    candidates = {},
+    index = 0,
+    reading_input = Context.new(),
+    okuri_input = Context.new(),
+  }, Session)
+end
+
+--- 読み入力中（▽、送り未開始）にローマ字を1文字追加する。
+--- 確定したかなは session.reading に積まれる。
+---@param char string
+function Session:input_reading(char)
+  Input.kanaInput(self.reading_input, char)
+  self.reading = self.reading .. self.reading_input:flush()
+end
+
+--- 読みの未確定ローマ字断片（例: "k" だけ打った直後）を返す。
+---@return string
+function Session:reading_pending()
+  return self.reading_input.buffer
+end
+
+--- 読みを1文字分削除する（<BS>相当）。
+--- 未確定のローマ字断片があればそちらを優先して1文字削る。
+--- reading 自体を削る場合は UTF-8 の文字境界を考慮する。
+---@return boolean has_more 削除後もセッションを継続すべきか
+--- （false ならもう読みが完全に空になったので、呼び出し側はセッションを終了させる）
+function Session:backspace_reading()
+  if self.reading_input.buffer ~= "" then
+    self.reading_input.buffer = self.reading_input.buffer:sub(1, -2)
+    return true
+  end
+
+  if self.reading == "" then
+    return false
+  end
+
+  local codepoints = kana_util._utf8_decode(self.reading)
+  table.remove(codepoints)
+  local out = {}
+  for _, cp in ipairs(codepoints) do
+    table.insert(out, kana_util._utf8_encode(cp))
+  end
+  self.reading = table.concat(out)
+
+  return self.reading ~= "" or self:reading_pending() ~= ""
+end
+
+--- 送り開始点を設定する（大文字/;を検知したときに呼ぶ）。
+--- この時点ではまだ子音は不明。次の input_okuri() の1文字目が子音になる。
+function Session:start_okuri()
+  self.okuri_consonant = ""
+end
+
+---@return boolean
+function Session:is_okuri_pending()
+  return self.okuri_consonant ~= nil
+end
+
+--- 送り仮名のローマ字を1文字追加する。
+---@param char string
+---@return boolean confirmed 送り仮名（子音+母音）が確定したかどうか
+function Session:input_okuri(char)
+  if self.okuri_consonant == "" then
+    -- 最初の1文字は子音として記録しておく（辞書検索キーに使うため）
+    self.okuri_consonant = char
+  end
+  Input.kanaInput(self.okuri_input, char)
+  local confirmed = self.okuri_input:flush()
+  if confirmed ~= "" then
+    self.okuri_kana = confirmed
+    return true
+  end
+  return false
+end
+
+--- 辞書検索用のキーを返す。
+--- 送りありの場合は reading .. okuri_consonant（例: "うご" .. "k" = "うごk"）。
+---@return string key
+---@return boolean has_okuri
+function Session:dict_key()
+  if self.okuri_consonant and self.okuri_consonant ~= "" then
+    return self.reading .. self.okuri_consonant, true
+  end
+  return self.reading, false
+end
+
+--- 検索結果の候補をセットし、先頭候補を選択状態にする。
+---@param candidates string[]
+function Session:set_candidates(candidates)
+  self.candidates = candidates
+  self.index = (#candidates > 0) and 1 or 0
+end
+
+---@return string|nil
+function Session:current_candidate()
+  if self.index >= 1 and self.index <= #self.candidates then
+    return self.candidates[self.index]
+  end
+  return nil
+end
+
+--- 次候補へ送る（末尾の次は先頭に循環する）。
+function Session:next_candidate()
+  if #self.candidates == 0 then
+    return
+  end
+  self.index = (self.index % #self.candidates) + 1
+end
+
+--- 前候補へ戻す（先頭の前は末尾に循環する）。
+function Session:prev_candidate()
+  if #self.candidates == 0 then
+    return
+  end
+  self.index = ((self.index - 2) % #self.candidates) + 1
+end
+
+return Session

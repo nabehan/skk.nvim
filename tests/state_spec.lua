@@ -1,0 +1,270 @@
+-- tests/state_spec.lua
+--
+-- lua/skk/henkan/state.lua のテスト。
+--
+-- state.lua は lua/skk/henkan/preedit.lua（vim.* 依存）と、vim.schedule /
+-- vim.notify / vim.api.nvim_buf_set_text 等に直接依存している。
+-- ここではテスト用の偽実装を package.loaded / _G.vim に差し込んでから
+-- state.lua を require することで、実 Neovim 無しでも状態遷移ロジックを
+-- 検証できるようにする。
+--
+-- 【前提】このファイルは `PlenaryBustedDirectory` 経由（tests/ 配下の
+-- 各ファイルごとに独立した headless Neovim プロセスで実行される）で
+-- 実行することを想定している。ここでの vim.api の差し替えが他の
+-- スペックファイルに漏れることはない。
+
+-- --- 偽の preedit（呼び出し履歴を記録するだけ） ---
+local preedit_calls = {}
+package.loaded["skk.henkan.preedit"] = {
+  anchor = function()
+    table.insert(preedit_calls, { "anchor" })
+  end,
+  is_anchored = function()
+    return true
+  end,
+  show_midashi = function(reading, okuri)
+    table.insert(preedit_calls, { "show_midashi", reading, okuri })
+  end,
+  show_henkan = function(cand, okuri)
+    table.insert(preedit_calls, { "show_henkan", cand, okuri })
+  end,
+  show_abbrev = function(reading)
+    table.insert(preedit_calls, { "show_abbrev", reading })
+  end,
+  hide = function()
+    table.insert(preedit_calls, { "hide" })
+  end,
+  anchor_position = function()
+    return 1, 0, 0 -- bufnr=1, row=0, col=0 の固定値
+  end,
+}
+
+-- --- vim.* の最小限のダミー実装 ---
+local buf_set_text_calls = {}
+_G.vim = _G.vim or {}
+vim.schedule = function(fn)
+  fn()
+end -- テストでは同期的に即実行する
+vim.notify = function(...) end
+vim.log = { levels = { INFO = 1 } }
+vim.api = vim.api or {}
+vim.api.nvim_buf_set_text = function(bufnr, r1, c1, r2, c2, lines)
+  table.insert(buf_set_text_calls, { bufnr = bufnr, row = r1, col = c1, text = lines[1] })
+end
+vim.api.nvim_win_set_cursor = function(_, _) end
+
+local state = require("skk.henkan.state")
+local dict = require("skk.dict")
+local parser = require("skk.dict.jisyo_parser")
+
+local function reset()
+  preedit_calls = {}
+  buf_set_text_calls = {}
+  if state.is_active() then
+    state.cancel()
+    preedit_calls = {} -- cancel 自体の呼び出し履歴は捨てる
+  end
+end
+
+local function last_inserted_text()
+  local last = buf_set_text_calls[#buf_set_text_calls]
+  return last and last.text or nil
+end
+
+describe("state: ▽ 開始・ローマ字入力", function()
+  before_each(reset)
+
+  it("start_midashi で ▽ が始まる", function()
+    state.start_midashi("hira", "u")
+    assert.are.equal("midashi", state.get_phase())
+    assert.is_true(state.is_active())
+  end)
+
+  it("input() で読みが蓄積される", function()
+    state.start_midashi("hira", "u")
+    state.input("g")
+    state.input("o")
+    -- session の中身は state.lua の外から直接見えないので、
+    -- ▼へ遷移させて dict_key 経由の検索結果で間接的に確認する。
+    dict.set_dict(parser.parse("うご /動/"))
+    state.space()
+    assert.are.equal("select", state.get_phase())
+  end)
+end)
+
+describe("state: 辞書検索と▼遷移", function()
+  before_each(function()
+    reset()
+    dict.set_dict(parser.parse(table.concat({
+      "かんじ /漢字/幹事/監事/",
+    }, "\n")))
+  end)
+
+  it("スペースで検索し ▼ へ遷移する", function()
+    state.start_midashi("hira", "k")
+    state.input("a")
+    state.input("n")
+    state.input("j")
+    state.input("i")
+    state.space()
+    assert.are.equal("select", state.get_phase())
+  end)
+
+  it("▼状態でスペースは次候補へ進む", function()
+    state.start_midashi("hira", "k")
+    for ch in ("anji"):gmatch(".") do
+      state.input(ch)
+    end
+    state.space() -- 検索 -> ▼、候補1 "漢字"
+    state.next_candidate() -- 候補2 "幹事"
+    state.confirm()
+    assert.are.equal("幹事", last_inserted_text())
+  end)
+
+  it("x で前候補へ戻る", function()
+    state.start_midashi("hira", "k")
+    for ch in ("anji"):gmatch(".") do
+      state.input(ch)
+    end
+    state.space()
+    state.next_candidate() -- "幹事"
+    state.next_candidate() -- "監事"
+    state.prev_candidate() -- "幹事" に戻る
+    state.confirm()
+    assert.are.equal("幹事", last_inserted_text())
+  end)
+
+  it("候補送りは循環する", function()
+    state.start_midashi("hira", "k")
+    for ch in ("anji"):gmatch(".") do
+      state.input(ch)
+    end
+    state.space() -- "漢字"
+    state.next_candidate() -- "幹事"
+    state.next_candidate() -- "監事"
+    state.next_candidate() -- 先頭に戻って "漢字"
+    state.confirm()
+    assert.are.equal("漢字", last_inserted_text())
+  end)
+end)
+
+describe("state: 確定・キャンセル", function()
+  before_each(function()
+    reset()
+    dict.set_dict(parser.parse("かんじ /漢字/"))
+  end)
+
+  it(
+    "▽状態で confirm すると読みをそのまま確定する（辞書検索していない場合）",
+    function()
+      state.start_midashi("hira", "u")
+      state.input("g")
+      state.input("o")
+      state.confirm()
+      assert.are.equal("うご", last_inserted_text())
+      assert.are.equal("idle", state.get_phase())
+    end
+  )
+
+  it("▼状態で confirm すると選択中の候補を確定する", function()
+    state.start_midashi("hira", "k")
+    for ch in ("anji"):gmatch(".") do
+      state.input(ch)
+    end
+    state.space()
+    state.confirm()
+    assert.are.equal("漢字", last_inserted_text())
+    assert.are.equal("idle", state.get_phase())
+  end)
+
+  it("cancel すると何も確定せずセッションが終わる", function()
+    state.start_midashi("hira", "k")
+    state.input("a")
+    state.cancel()
+    assert.are.equal("idle", state.get_phase())
+    assert.are.equal(0, #buf_set_text_calls)
+  end)
+
+  it("確定後は is_active が false になる", function()
+    state.start_midashi("hira", "u")
+    state.confirm()
+    assert.is_false(state.is_active())
+  end)
+end)
+
+describe("state: <BS> 相当（backspace）", function()
+  before_each(function()
+    reset()
+    dict.set_dict(parser.parse("かんじ /漢字/"))
+  end)
+
+  it("読みを1文字消す", function()
+    state.start_midashi("hira", "k")
+    state.input("a") -- reading = "か"
+    state.backspace() -- reading = ""(空になるのでセッション終了) のはず
+
+    -- "ka" の2文字目の "a" を消した時点でまだ "か" という1文字だが、
+    -- backspace_reading は reading が空でなければ継続するので、
+    -- ここでは reading="" になりセッションごと終了する。
+    assert.are.equal("idle", state.get_phase())
+  end)
+
+  it("読みが複数文字あれば、1文字消してセッションは継続する", function()
+    state.start_midashi("hira", "k")
+    state.input("a") -- "か"
+    state.input("n")
+    state.input("j")
+    state.input("i") -- reading = "かんじ"
+    state.backspace() -- reading = "かん"
+    assert.are.equal("midashi", state.get_phase())
+  end)
+end)
+
+describe("state: 候補ゼロ件のフォールバック", function()
+  before_each(function()
+    reset()
+    dict.set_dict(parser.parse("かんじ /漢字/")) -- "みつからない" は登録しない
+  end)
+
+  it("読みをそのままプレーンテキストで確定する", function()
+    state.start_midashi("hira", "m")
+    for ch in ("itukaranai"):gmatch(".") do
+      state.input(ch)
+    end
+    state.space()
+    assert.are.equal("idle", state.get_phase()) -- フォールバックで即確定するので idle に戻る
+    assert.are.equal("みつからない", last_inserted_text())
+  end)
+end)
+
+describe("state: q によるかな変換確定（▽状態のみ）", function()
+  before_each(reset)
+
+  it("ひらがなモードの ▽ で q を打つとカタカナで確定する", function()
+    state.start_midashi("hira", "k")
+    state.input("a")
+    state.input("n")
+    state.input("j")
+    state.input("i")
+    state.convert_and_confirm_kana()
+    assert.are.equal("カンジ", last_inserted_text())
+    assert.are.equal("idle", state.get_phase())
+  end)
+
+  it("カタカナモードの ▽ で q を打つとひらがなで確定する", function()
+    state.start_midashi("kata", "k")
+    state.input("a")
+    state.convert_and_confirm_kana()
+    assert.are.equal("か", last_inserted_text())
+  end)
+end)
+
+describe("state._katakana_to_hiragana", function()
+  it("カタカナをひらがなに変換する", function()
+    assert.are.equal("かんじ", state._katakana_to_hiragana("カンジ"))
+  end)
+
+  it("範囲外の文字（記号等）はそのまま素通りする", function()
+    assert.are.equal("かんじー", state._katakana_to_hiragana("カンジー"))
+  end)
+end)
