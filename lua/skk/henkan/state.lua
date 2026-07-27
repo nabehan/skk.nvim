@@ -39,22 +39,23 @@ function M.get_phase()
   return phase
 end
 
---- カタカナ -> ひらがな（コードポイント -0x60）。
---- kana_util.to_katakana の逆方向で、q によるひらがな⇔カタカナ変換に使う。
----@param str string
+--- 表示・確定用のレンダリング: source_mode がカタカナならカタカナに
+--- 変換し、ひらがなならそのまま返す。
+--- 【設計】① 内部の読み（session.reading）は常にひらがなで保持する。
+--- ② ▽ の表示（画面に見えるもの）は source_mode に連動させる
+--- （カタカナモードで▽に入ったら▽の表示もカタカナにする）。
+--- ③ 確定動作は別ルール: <CR> は常にひらがな確定、q は常にカタカナ確定
+--- （source_mode に関係なく固定。convert_and_confirm_kana を参照）。
+---@param text string
+---@param mode "hira"|"kata"
 ---@return string
-local function katakana_to_hiragana(str)
-  local out = {}
-  for _, cp in ipairs(kana_util._utf8_decode(str)) do
-    if cp >= 0x30A1 and cp <= 0x30F6 then
-      table.insert(out, kana_util._utf8_encode(cp - 0x60))
-    else
-      table.insert(out, kana_util._utf8_encode(cp))
-    end
+local function render_for_mode(text, mode)
+  if mode == "kata" then
+    return kana_util.to_katakana(text)
   end
-  return table.concat(out)
+  return text
 end
-M._katakana_to_hiragana = katakana_to_hiragana -- テスト用に公開
+M._render_for_mode = render_for_mode -- テスト用に公開
 
 --- ▽ を開始する。capture.lua が大文字キー検知時に呼ぶ。
 ---@param mode "hira"|"kata" ▽を開始したモード（送り仮名や q の変換先に使う）
