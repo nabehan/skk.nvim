@@ -32,11 +32,21 @@ local Context = require("skk.context")
 local Input = require("skk.input")
 local kana_util = require("skk.kana_util")
 local mode_util = require("skk.mode")
+local henkan_state = require("skk.henkan.state")
 
 local M = {}
 
 local context = Context.new()
 local ns_id = nil
+
+-- 制御キーの raw keycode。vim.api.nvim_replace_termcodes は使わない
+-- （preedit.lua の namespace 生成で踏んだのと同じ「モジュールのトップ
+-- レベルで vim.api を呼んでしまい、vim グローバルの無い環境で require
+-- するだけでクラッシュする」ミスを避けるため。これらは全て固定の
+-- ASCII 制御バイトなので string.char で十分）。
+local BS = string.char(8) -- <BS>
+local CR = string.char(13) -- <CR> (Enter)
+local CTRL_G = string.char(7) -- <C-g>
 
 -- ひらがな/カタカナモードで、確定したかなをどう表示するか。
 ---@type table<SkkMode, fun(s: string): string>
