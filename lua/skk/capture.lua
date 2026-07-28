@@ -27,6 +27,14 @@
 --   指摘のとおり）。
 -- - 半角カナモードは検討したが、ターミナルエミュレーターの動作が
 --   不安定になる事例が確認されたため実装しない方針とした。
+--
+-- 【henkan（▽/▼、漢字変換）との連携】
+-- ひらがな/カタカナモードで、未確定バッファが空の状態で大文字キーが
+-- 来ると lua/skk/henkan/state.lua の ▽ を開始する。henkan がアクティブな
+-- 間は、直接入力の処理には一切進まず handle_henkan_key() へ全キーを
+-- 委譲する（<CR>=確定 / <BS>=読み取り消し / <C-g>=キャンセル / space=
+-- 検索・次候補 / ▼状態のみ x=前候補 / ▽状態のみ q=かな変換確定）。
+-- phase 3 時点では送りあり変換（okuri）はまだ未対応。
 
 local Context = require("skk.context")
 local Input = require("skk.input")
@@ -136,6 +144,58 @@ local function process_romaji(key)
   end)
 end
 
+--- henkan（▽/▼）がアクティブな間のキー処理。
+--- <CR>/<BS>/<C-g> はフェーズに関係なく共通、それ以外はフェーズごとに
+--- 意味が変わる（▼状態の space/x は候補送り、▽状態の q はかな変換確定、等）。
+---@param key string
+---@return string 常に "" を返し、henkan アクティブ中は元のキーを必ず消費する
+local function handle_henkan_key(key)
+  if key == CR then
+    henkan_state.confirm()
+    return ""
+  end
+  if key == BS then
+    henkan_state.backspace()
+    return ""
+  end
+  if key == CTRL_G then
+    henkan_state.cancel()
+    return ""
+  end
+  if key == " " then
+    henkan_state.space()
+    return ""
+  end
+
+  local phase = henkan_state.get_phase()
+
+  if phase == "select" then
+    if key == "x" then
+      henkan_state.prev_candidate()
+    end
+    -- phase 3 時点では、▼状態でのその他のキーは未定義として無視する。
+    -- 本家 SKK には「候補確定 + 続けて入力」という挙動もあるが、
+    -- 今回はスコープ外として明示的に何もしない。
+    return ""
+  end
+
+  -- ここから phase == "midashi"
+  if key == "q" then
+    henkan_state.convert_and_confirm_kana()
+    return ""
+  end
+
+  if is_target_key(key) then
+    henkan_state.input(key)
+    return ""
+  end
+
+  -- 未対応のキー（送りあり変換の開始トリガーとなる大文字キー等は
+  -- phase 4 で対応する）。安全のためセッションを中断する。
+  henkan_state.cancel()
+  return ""
+end
+
 ---@param key string 実際に処理されるキー（マッピング適用後）
 ---@param _typed string マッピング適用前に打鍵されたキー（未使用）
 ---@return string|nil
@@ -160,6 +220,19 @@ local function on_key(key, _typed)
   end
 
   -- ここから hira / kata 共通
+
+  -- henkan (▽/▼) がアクティブなら、直接入力の処理には進まずそちらへ委ねる。
+  if henkan_state.is_active() then
+    return handle_henkan_key(key)
+  end
+
+  -- ▽ 開始トリガー: 未確定バッファが空の状態での大文字キー
+  -- （送りあり変換の送り開始点トリガーは phase 4 で対応する）。
+  if context.buffer == "" and key:match("%u") then
+    henkan_state.start_midashi(context.mode, key:lower())
+    return ""
+  end
+
   if context.buffer == "" then
     local target = mode_util.char_transition(key, context.mode)
     if target then
