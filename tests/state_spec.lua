@@ -71,6 +71,30 @@ local function last_inserted_text()
   return last and last.text or nil
 end
 
+local function last_preedit_call()
+  return preedit_calls[#preedit_calls]
+end
+
+describe("state: ▽ の表示は source_mode に連動する（②）", function()
+  before_each(reset)
+
+  it("hira モードで開始すると ▽ 表示はひらがなのまま", function()
+    state.start_midashi("hira", "k")
+    state.input("a")
+    local call = last_preedit_call()
+    assert.are.equal("show_midashi", call[1])
+    assert.are.equal("か", call[2])
+  end)
+
+  it("kata モードで開始すると ▽ 表示はカタカナになる（内部の読みはひらがなのまま）", function()
+    state.start_midashi("kata", "k")
+    state.input("a")
+    local call = last_preedit_call()
+    assert.are.equal("show_midashi", call[1])
+    assert.are.equal("カ", call[2])
+  end)
+end)
+
 describe("state: ▽ 開始・ローマ字入力", function()
   before_each(reset)
 
@@ -234,7 +258,7 @@ describe("state: 候補ゼロ件のフォールバック", function()
   end)
 end)
 
-describe("state: q によるかな変換確定（▽状態のみ）", function()
+describe("state: q によるかな変換確定（▽状態のみ、常にカタカナ確定）", function()
   before_each(reset)
 
   it("ひらがなモードの ▽ で q を打つとカタカナで確定する", function()
@@ -248,20 +272,33 @@ describe("state: q によるかな変換確定（▽状態のみ）", function()
     assert.are.equal("idle", state.get_phase())
   end)
 
-  it("カタカナモードの ▽ で q を打つとひらがなで確定する", function()
+  it("カタカナモードの ▽ で q を打っても、q は常にカタカナ確定なので変わらずカタカナになる", function()
+    -- 設計ルール③: <CR> は常にひらがな確定、q は常にカタカナ確定。
+    -- source_mode には依存しない固定ルール。
     state.start_midashi("kata", "k")
     state.input("a")
     state.convert_and_confirm_kana()
+    assert.are.equal("カ", last_inserted_text())
+  end)
+end)
+
+describe("state: <CR> は常にひらがな確定（▽状態、ルール③）", function()
+  before_each(reset)
+
+  it("カタカナモードの ▽ で <CR>（confirm）してもひらがなで確定する", function()
+    state.start_midashi("kata", "k")
+    state.input("a")
+    state.confirm()
     assert.are.equal("か", last_inserted_text())
   end)
 end)
 
-describe("state._katakana_to_hiragana", function()
-  it("カタカナをひらがなに変換する", function()
-    assert.are.equal("かんじ", state._katakana_to_hiragana("カンジ"))
+describe("state._render_for_mode (② ▽表示は source_mode に連動)", function()
+  it("hira モードはそのまま返す", function()
+    assert.are.equal("かんじ", state._render_for_mode("かんじ", "hira"))
   end)
 
-  it("範囲外の文字（記号等）はそのまま素通りする", function()
-    assert.are.equal("かんじー", state._katakana_to_hiragana("カンジー"))
+  it("kata モードはカタカナに変換する", function()
+    assert.are.equal("カンジ", state._render_for_mode("かんじ", "kata"))
   end)
 end)

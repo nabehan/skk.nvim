@@ -58,14 +58,14 @@ end
 M._render_for_mode = render_for_mode -- テスト用に公開
 
 --- ▽ を開始する。capture.lua が大文字キー検知時に呼ぶ。
----@param mode "hira"|"kata" ▽を開始したモード（送り仮名や q の変換先に使う）
+---@param mode "hira"|"kata" ▽を開始したモード（表示・送り仮名の変換先に使う）
 ---@param first_char string 大文字キーを小文字化した、最初のローマ字1文字
 function M.start_midashi(mode, first_char)
   phase = "midashi"
   session = Session.new(mode)
   preedit.anchor()
   session:input_reading(first_char)
-  preedit.show_midashi(session.reading, session.okuri_consonant)
+  preedit.show_midashi(render_for_mode(session.reading, session.source_mode), session.okuri_consonant)
 end
 
 --- ▽の間にローマ字を1文字追加する。
@@ -75,7 +75,7 @@ function M.input(char)
     return
   end
   session:input_reading(char)
-  preedit.show_midashi(session.reading, session.okuri_consonant)
+  preedit.show_midashi(render_for_mode(session.reading, session.source_mode), session.okuri_consonant)
 end
 
 --- <BS> 相当。読みを1文字消す。空になったらセッションごと中断する。
@@ -94,7 +94,7 @@ function M.backspace()
     M.cancel()
     return
   end
-  preedit.show_midashi(session.reading, session.okuri_consonant)
+  preedit.show_midashi(render_for_mode(session.reading, session.source_mode), session.okuri_consonant)
 end
 
 --- スペース。▽状態なら辞書検索して▼へ、▼状態なら次候補へ。
@@ -122,15 +122,16 @@ function M.search()
     return
   end
 
-  preedit.show_henkan(session:current_candidate(), session.okuri_kana)
+  preedit.show_henkan(session:current_candidate(), render_for_mode(session.okuri_kana or "", session.source_mode))
 end
 
 --- 候補ゼロ件のときのフォールバック。
---- 読みをそのままプレーンテキストで確定し、通知を出す。
+--- 画面に表示していた（source_mode でレンダリング済みの）読みを
+--- そのままプレーンテキストで確定し、通知を出す。
 --- 本家 SKK のシームレスな単語登録は今後実装予定。
 function M._fallback_no_candidates()
-  local reading = session.reading
-  M.confirm_text(reading)
+  local text = render_for_mode(session.reading, session.source_mode)
+  M.confirm_text(text)
   vim.notify(
     "skk.nvim: 候補が見つかりませんでした（シームレスな単語登録は今後実装予定です）",
     vim.log.levels.INFO
@@ -143,7 +144,7 @@ function M.next_candidate()
     return
   end
   session:next_candidate()
-  preedit.show_henkan(session:current_candidate(), session.okuri_kana)
+  preedit.show_henkan(session:current_candidate(), render_for_mode(session.okuri_kana or "", session.source_mode))
 end
 
 --- 前候補、x キー相当（▼状態のみ）。
@@ -152,29 +153,29 @@ function M.prev_candidate()
     return
   end
   session:prev_candidate()
-  preedit.show_henkan(session:current_candidate(), session.okuri_kana)
+  preedit.show_henkan(session:current_candidate(), render_for_mode(session.okuri_kana or "", session.source_mode))
 end
 
---- ▽の間の q: 読みをカタカナ/ひらがなに変換して即確定する。
+--- ▽の間の q: 読みをカタカナに変換して即確定する。
+--- 【設計ルール③】source_mode に関係なく、q は常にカタカナ確定で固定する
+--- （<CR> が常にひらがな確定なのと対になる、モード非依存のルール）。
 --- （▼状態では q に特別な意味を持たせない。phase 3 時点では未定義のため無視する）
 function M.convert_and_confirm_kana()
   if phase ~= "midashi" or not session then
     return
   end
-  local text
-  if session.source_mode == "hira" then
-    text = kana_util.to_katakana(session.reading)
-  else
-    text = katakana_to_hiragana(session.reading)
-  end
-  M.confirm_text(text)
+  M.confirm_text(kana_util.to_katakana(session.reading))
 end
 
---- 確定操作（Enter 等）。▼状態なら選択中の候補、▽状態なら読みをそのまま確定する。
+--- 確定操作（Enter 等）。▼状態なら選択中の候補+送り仮名、▽状態なら
+--- 読みをそのまま（常にひらがな、ルール③）確定する。
 function M.confirm()
   if phase == "select" and session then
-    M.confirm_text((session:current_candidate() or "") .. (session.okuri_kana or ""))
+    local okurigana = render_for_mode(session.okuri_kana or "", session.source_mode)
+    M.confirm_text((session:current_candidate() or "") .. okurigana)
   elseif phase == "midashi" and session then
+    -- <CR> は常にひらがな確定。session.reading は元々ひらがなの内部表現
+    -- なので、そのまま使えばよい（source_mode に関係なく変換しない）。
     M.confirm_text(session.reading)
   end
 end
