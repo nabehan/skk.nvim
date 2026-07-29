@@ -57,6 +57,16 @@ local function render_for_mode(text, mode)
 end
 M._render_for_mode = render_for_mode -- テスト用に公開
 
+--- ▽ 表示用に、確定済みの読み（source_mode でレンダリング済み）と
+--- 未確定のローマ字断片を連結する。
+--- 【重要】これが抜けていると "K"→"▽"、"Kan"→"▽か"（"n" が消える）
+--- のように、打鍵と表示が一致しない不具合になる（実際に報告されたバグ）。
+--- 未確定断片は常に半角ASCIIなので、レンダリングせずそのまま連結する。
+---@return string
+local function midashi_display()
+  return render_for_mode(session.reading, session.source_mode) .. session:reading_pending()
+end
+
 --- ▽ を開始する。capture.lua が大文字キー検知時に呼ぶ。
 ---@param mode "hira"|"kata" ▽を開始したモード（表示・送り仮名の変換先に使う）
 ---@param first_char string 大文字キーを小文字化した、最初のローマ字1文字
@@ -65,7 +75,7 @@ function M.start_midashi(mode, first_char)
   session = Session.new(mode)
   preedit.anchor()
   session:input_reading(first_char)
-  preedit.show_midashi(render_for_mode(session.reading, session.source_mode), session.okuri_consonant)
+  preedit.show_midashi(midashi_display(), session.okuri_consonant)
 end
 
 --- ▽の間にローマ字を1文字追加する。
@@ -75,7 +85,7 @@ function M.input(char)
     return
   end
   session:input_reading(char)
-  preedit.show_midashi(render_for_mode(session.reading, session.source_mode), session.okuri_consonant)
+  preedit.show_midashi(midashi_display(), session.okuri_consonant)
 end
 
 --- <BS> 相当。読みを1文字消す。空になったらセッションごと中断する。
@@ -94,7 +104,7 @@ function M.backspace()
     M.cancel()
     return
   end
-  preedit.show_midashi(render_for_mode(session.reading, session.source_mode), session.okuri_consonant)
+  preedit.show_midashi(midashi_display(), session.okuri_consonant)
 end
 
 --- スペース。▽状態なら辞書検索して▼へ、▼状態なら次候補へ。
