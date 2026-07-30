@@ -95,6 +95,38 @@ describe("state: ▽ の表示は source_mode に連動する（②）", functio
   end)
 end)
 
+describe("state: ▽ 表示に未確定のローマ字断片が含まれる（回帰テスト）", function()
+  -- 以前、▽ の表示が session.reading（確定済み部分）だけを見ており、
+  -- 未確定のローマ字断片（例: "kan" と打った直後の "n"）が表示から
+  -- 抜け落ちていた。"K"->"▽"、"Kan"->"▽か"（"n" が消える）のように、
+  -- 打鍵と表示が一致しない不具合として実際に報告された。
+  before_each(reset)
+
+  it("K の直後は ▽k （まだ何も確定していない）", function()
+    state.start_midashi("hira", "k")
+    local call = last_preedit_call()
+    assert.are.equal("show_midashi", call[1])
+    assert.are.equal("k", call[2])
+  end)
+
+  it("Kan の直後は ▽かn （か確定 + n が未確定のまま表示される）", function()
+    state.start_midashi("hira", "k")
+    state.input("a")
+    state.input("n")
+    local call = last_preedit_call()
+    assert.are.equal("かn", call[2])
+  end)
+
+  it("Kanj の直後は ▽かんj （ん確定 + j が未確定のまま表示される）", function()
+    state.start_midashi("hira", "k")
+    state.input("a")
+    state.input("n")
+    state.input("j")
+    local call = last_preedit_call()
+    assert.are.equal("かんj", call[2])
+  end)
+end)
+
 describe("state: ▽ 開始・ローマ字入力", function()
   before_each(reset)
 
