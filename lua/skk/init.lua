@@ -3,14 +3,16 @@
 -- プラグインのエントリーポイント。
 -- require("skk").setup() を呼ぶと vim.on_key() のリスナーが登録され、
 -- <C-j>（挿入モード）でひらがなモードに入れるようになる。
+-- ▽/▼ (henkan) がアクティブな間は、<C-j> は <CR> と同じく確定として扱う。
 -- l/q/L によるモード切替は lua/skk/capture.lua の vim.on_key() 側で処理する。
 
 local capture = require("skk.capture")
+local henkan_state = require("skk.henkan.state")
 
 local M = {}
 
 ---@class SkkSetupOpts
----@field enter_key string? 半角英数/全角英数 -> ひらがな。デフォルト "<C-j>"
+---@field enter_key string? 半角英数/全角英数 -> ひらがな。henkan 中は確定。デフォルト "<C-j>"
 
 --- ▽/▼ 表示用のハイライトグループのデフォルトを定義する。
 --- 既にユーザーやカラースキームが定義済みなら上書きしない (default = true)。
@@ -32,10 +34,15 @@ function M.setup(opts)
   end
 
   vim.keymap.set("i", enter_key, function()
+    -- henkan (▽/▼) がアクティブな間は、<C-j> も <CR> と同じ「確定」として扱う。
+    if henkan_state.is_active() then
+      henkan_state.confirm()
+      return
+    end
     if capture.transition(enter_key) then
       notify_mode()
     end
-  end, { desc = "skk.nvim: enter hiragana mode" })
+  end, { desc = "skk.nvim: enter hiragana mode / confirm henkan" })
 
   vim.api.nvim_create_user_command("SkkMode", function()
     notify_mode()

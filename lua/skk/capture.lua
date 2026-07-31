@@ -53,6 +53,12 @@ local ns_id = nil
 -- するだけでクラッシュする」ミスを避けるため。これらは全て固定の
 -- ASCII 制御バイトなので string.char で十分）。
 local BS = string.char(8) -- <BS>
+-- 物理的な Backspace キーは、ターミナルによって 0x08 (BS) ではなく
+-- 0x7F (DEL) を送ってくることがある（よくある終端エミュレータの差異）。
+-- 直接入力モード側は is_target_key に該当しないキーを汎用的に
+-- リセットする設計なのでこの差異を意識せずに済むが、henkan 側は
+-- <BS> を明示的に検知する必要があるため、両方のバイト値を受け付ける。
+local BS_ALT = string.char(127) -- 一部の環境で Backspace が送る DEL
 local CR = string.char(13) -- <CR> (Enter)
 local CTRL_G = string.char(7) -- <C-g>
 
@@ -154,7 +160,7 @@ local function handle_henkan_key(key)
     henkan_state.confirm()
     return ""
   end
-  if key == BS then
+  if key == BS or key == BS_ALT then
     henkan_state.backspace()
     return ""
   end
