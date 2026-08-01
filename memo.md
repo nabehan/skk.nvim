@@ -6,3 +6,4 @@
 /usr/share/skk/SKK-JISYO.jinmei
 /usr/share/skk/SKK-JISYO.assoc
 
+新人研修の場面では、

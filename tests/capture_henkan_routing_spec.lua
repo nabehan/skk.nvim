@@ -4,66 +4,96 @@
 -- テスト。on_key/handle_henkan_key は vim.on_key() 経由でしか実行されない
 -- ローカル関数なので、ここでは同じルーティングルールを、記録するだけの
 -- 偽 henkan_state を使って再現し、「どのキーがどの henkan_state 関数を
--- 呼ぶか」を検証する。実際の vim.on_key 配線・extmark表示・バッファ挿入
--- 自体は plenary/nvim 上での確認が必要。
+-- 呼ぶか」「確定後に他のキーがどう再処理されるか」を検証する。
+-- 実際の vim.on_key 配線・extmark表示・バッファ挿入自体は plenary/nvim
+-- 上での確認が必要。
 
 ---@type table[]
 local calls
 
---- lua/skk/capture.lua の on_key / handle_henkan_key と同じルーティング
---- ルールを、モック henkan_state を使って再現する。実際の capture.lua は
---- 大文字トリガーを `context.buffer == ""` の場合のみ有効にしているが、
---- この gate は l/q/L のモード切替と全く同じパターンで
---- tests/capture_integration_spec.lua 側で既に検証済みのため、
---- ここでは henkan 固有の新しいルーティングだけに焦点を絞る。
----@param henkan_state table 偽の henkan_state（is_active/get_phase/各アクション記録用）
+--- lua/skk/capture.lua の handle_henkan_key と同じルーティングルールを、
+--- モック henkan_state を使って再現する。
+---@param henkan_state table
 ---@param is_target_key fun(key: string): boolean
 ---@param key string
-local function route(henkan_state, is_target_key, key)
+---@return boolean reprocess true なら、このキーは直接入力として再処理する
+local function handle_henkan_key(henkan_state, is_target_key, key)
   local BS = string.char(8)
   local CR = string.char(13)
   local CTRL_G = string.char(7)
 
-  if henkan_state.is_active() then
-    if key == CR then
-      henkan_state.confirm()
-      return
-    end
-    if key == BS then
-      henkan_state.backspace()
-      return
-    end
-    if key == CTRL_G then
-      henkan_state.cancel()
-      return
-    end
-    if key == " " then
-      henkan_state.space()
-      return
-    end
-
-    local phase = henkan_state.get_phase()
-    if phase == "select" then
-      if key == "x" then
-        henkan_state.prev_candidate()
-      end
-      return
-    end
-
-    if key == "q" then
-      henkan_state.convert_and_confirm_kana()
-      return
-    end
-    if is_target_key(key) then
-      henkan_state.input(key)
-      return
-    end
+  if key == CR then
+    henkan_state.confirm()
+    return false
+  end
+  if key == BS then
+    henkan_state.backspace()
+    return false
+  end
+  if key == CTRL_G then
     henkan_state.cancel()
-    return
+    return false
+  end
+  if key == " " then
+    henkan_state.space()
+    return false
+  end
+
+  local phase = henkan_state.get_phase()
+
+  if phase == "select" then
+    if key == "x" then
+      henkan_state.prev_candidate()
+      return false
+    end
+    -- space/x 以外のキーは、選択中の候補を確定したうえで
+    -- 直接入力として再処理する。
+    henkan_state.confirm()
+    return true
+  end
+
+  -- ここから phase == "midashi"
+  if key == "q" then
+    henkan_state.convert_and_confirm_kana()
+    return false
+  end
+  if key:match("%u") then
+    -- 送り開始点トリガー
+    henkan_state.start_okuri()
+    henkan_state.input(key:lower())
+    return false
+  end
+  if is_target_key(key) then
+    henkan_state.input(key)
+    return false
+  end
+  henkan_state.cancel()
+  return false
+end
+
+--- lua/skk/capture.lua の on_key と同じルーティングルールを再現する。
+--- henkan アクティブ中に handle_henkan_key が reprocess=true を返したら、
+--- 直接入力側の「▽開始トリガー（大文字）」チェックだけ簡易的に再現する
+--- （小文字の場合の実際の process_romaji 呼び出しまでは追わない。
+-- そこは tests/capture_integration_spec.lua が別途カバーしている）。
+---@param henkan_state table
+---@param is_target_key fun(key: string): boolean
+---@param key string
+local function route(henkan_state, is_target_key, key)
+  if henkan_state.is_active() then
+    local reprocess = handle_henkan_key(henkan_state, is_target_key, key)
+    if not reprocess then
+      return
+    end
   end
 
   if key:match("%u") then
     henkan_state.start_midashi("hira", key:lower())
+    return
+  end
+
+  if is_target_key(key) then
+    table.insert(calls, { "process_romaji", key })
   end
 end
 
@@ -82,6 +112,7 @@ local function make_fake_state()
   end
   for _, name in ipairs({
     "start_midashi",
+    "start_okuri",
     "input",
     "backspace",
     "space",
@@ -93,6 +124,11 @@ local function make_fake_state()
   }) do
     fake[name] = function(...)
       table.insert(calls, { name, ... })
+      if name == "confirm" then
+        -- 確定すると henkan は非アクティブに戻る（実際の state.lua と同じ）
+        fake._active = false
+        fake._phase = "idle"
+      end
     end
   end
   return fake
@@ -118,10 +154,10 @@ describe("capture henkan routing: ▽ 開始トリガー", function()
     assert.are.equal("u", calls[1][3])
   end)
 
-  it("非アクティブ時、小文字キーでは何も呼ばれない", function()
+  it("非アクティブ時、小文字キーでは通常入力として処理される", function()
     local fake = make_fake_state()
     route(fake, is_target_key, "u")
-    assert.are.equal(0, #calls)
+    assert.are.equal("process_romaji", calls[1][1])
   end)
 end)
 
@@ -194,12 +230,14 @@ describe("capture henkan routing: ▽ (midashi) フェーズ", function()
     assert.are.equal("a", calls[1][2])
   end)
 
-  it("未対応のキー（大文字等）は cancel を呼ぶ", function()
+  it("大文字キーは送り開始点トリガー（start_okuri + input）になる", function()
     local fake = make_fake_state()
     fake._active = true
     fake._phase = "midashi"
-    route(fake, is_target_key, "U")
-    assert.are.equal("cancel", calls[1][1])
+    route(fake, is_target_key, "K")
+    assert.are.equal("start_okuri", calls[1][1])
+    assert.are.equal("input", calls[2][1])
+    assert.are.equal("k", calls[2][2])
   end)
 end)
 
@@ -224,19 +262,23 @@ describe("capture henkan routing: ▼ (select) フェーズ", function()
     assert.are.equal("prev_candidate", calls[1][1])
   end)
 
-  it("q は▼状態では何も呼ばない（phase 3 時点では未定義）", function()
+  it("小文字キーは、確定したうえで直接入力として再処理される", function()
     local fake = make_fake_state()
     fake._active = true
     fake._phase = "select"
-    route(fake, is_target_key, "q")
-    assert.are.equal(0, #calls)
+    route(fake, is_target_key, "t")
+    assert.are.equal("confirm", calls[1][1])
+    assert.are.equal("process_romaji", calls[2][1])
+    assert.are.equal("t", calls[2][2])
   end)
 
-  it("通常の小文字は▼状態では何も呼ばない（phase 3 時点では未定義）", function()
+  it("大文字キーは、確定したうえで新しい ▽ が開始される", function()
     local fake = make_fake_state()
     fake._active = true
     fake._phase = "select"
-    route(fake, is_target_key, "a")
-    assert.are.equal(0, #calls)
+    route(fake, is_target_key, "T")
+    assert.are.equal("confirm", calls[1][1])
+    assert.are.equal("start_midashi", calls[2][1])
+    assert.are.equal("t", calls[2][3])
   end)
 end)

@@ -91,6 +91,21 @@ describe("Session:dict_key", function()
   end)
 end)
 
+describe("Session:start_okuri", function()
+  it("直前の未確定ローマ字断片が残っていた場合は破棄する", function()
+    local s = Session.new("hira")
+    s:input_reading("u")
+    s:input_reading("g")
+    s:input_reading("o") -- reading = "うご"
+    s:input_reading("k") -- pending "k"（まだ確定していない）
+    assert.are.equal("k", s:reading_pending())
+
+    s:start_okuri()
+    assert.are.equal("", s:reading_pending())
+    assert.are.equal("うご", s.reading) -- 確定済みの読みは影響を受けない
+  end)
+end)
+
 describe("Session:input_okuri", function()
   it("子音+母音が確定した瞬間に true を返し、okuri_kana が設定される", function()
     local s = Session.new("hira")

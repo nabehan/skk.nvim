@@ -83,7 +83,11 @@ end
 
 --- 送り開始点を設定する（大文字/;を検知したときに呼ぶ）。
 --- この時点ではまだ子音は不明。次の input_okuri() の1文字目が子音になる。
+--- 直前の読み入力に未確定のローマ字断片が残っていた場合は破棄する
+--- （送り開始点以降は okuri_input 側の変換エンジンに切り替わるため、
+--- 中途半端な断片を表示に残さないようにするための後始末）。
 function Session:start_okuri()
+  self.reading_input.buffer = ""
   self.okuri_consonant = ""
 end
 
