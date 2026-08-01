@@ -2,9 +2,10 @@
 --
 -- ▽/▼ の状態機械本体。lua/skk/capture.lua から呼ばれる。
 --
--- 【phase 3 時点のスコープ】送りなし変換のみ対応する。送りあり関連の
--- メソッド（Session:start_okuri 等）は既に用意されているが、ここから
--- はまだ呼ばない（実装順序4で配線する）。
+-- 送りなし変換に加えて、送りあり変換（okuri-ari）にも対応する。
+-- ▽の中でもう一度大文字キー（capture.lua が検知して M.start_okuri() を
+-- 呼ぶ）が来ると、以降のローマ字入力は送り仮名側（Session:input_okuri）
+-- に切り替わり、子音+母音が確定した瞬間に自動的に辞書検索（▼へ遷移）する。
 --
 -- 状態:
 --   "idle"    -- 変換していない（直接入力モード）
@@ -78,12 +79,35 @@ function M.start_midashi(mode, first_char)
   preedit.show_midashi(midashi_display(), session.okuri_consonant)
 end
 
---- ▽の間にローマ字を1文字追加する。
+--- 送り開始点を設定する。▽の中でもう一度大文字キー（送りあり変換の
+--- トリガー）が来たときに capture.lua から呼ばれる。この時点ではまだ
+--- 子音は不明で、直後に呼ばれる M.input() の1文字目が
+--- session.okuri_consonant として記録される。
+function M.start_okuri()
+  if phase ~= "midashi" or not session then
+    return
+  end
+  session:start_okuri()
+end
+
+--- ▽の間にローマ字を1文字追加する。送り開始点が設定済みなら
+--- 送り仮名側の入力として扱い、子音+母音が確定した瞬間に
+--- 自動的に辞書検索（▼への遷移）を行う。
 ---@param char string
 function M.input(char)
   if phase ~= "midashi" or not session then
     return
   end
+
+  if session:is_okuri_pending() then
+    local confirmed = session:input_okuri(char)
+    preedit.show_midashi(midashi_display(), session.okuri_consonant)
+    if confirmed then
+      M.search()
+    end
+    return
+  end
+
   session:input_reading(char)
   preedit.show_midashi(midashi_display(), session.okuri_consonant)
 end
@@ -136,11 +160,12 @@ function M.search()
 end
 
 --- 候補ゼロ件のときのフォールバック。
---- 画面に表示していた（source_mode でレンダリング済みの）読みを
+--- 画面に表示していた（source_mode でレンダリング済みの）読み + 送り仮名を
 --- そのままプレーンテキストで確定し、通知を出す。
 --- 本家 SKK のシームレスな単語登録は今後実装予定。
 function M._fallback_no_candidates()
   local text = render_for_mode(session.reading, session.source_mode)
+    .. render_for_mode(session.okuri_kana or "", session.source_mode)
   M.confirm_text(text)
   vim.notify(
     "skk.nvim: 候補が見つかりませんでした（シームレスな単語登録は今後実装予定です）",

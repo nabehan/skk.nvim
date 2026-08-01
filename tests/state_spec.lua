@@ -86,13 +86,16 @@ describe("state: ▽ の表示は source_mode に連動する（②）", functio
     assert.are.equal("か", call[2])
   end)
 
-  it("kata モードで開始すると ▽ 表示はカタカナになる（内部の読みはひらがなのまま）", function()
-    state.start_midashi("kata", "k")
-    state.input("a")
-    local call = last_preedit_call()
-    assert.are.equal("show_midashi", call[1])
-    assert.are.equal("カ", call[2])
-  end)
+  it(
+    "kata モードで開始すると ▽ 表示はカタカナになる（内部の読みはひらがなのまま）",
+    function()
+      state.start_midashi("kata", "k")
+      state.input("a")
+      local call = last_preedit_call()
+      assert.are.equal("show_midashi", call[1])
+      assert.are.equal("カ", call[2])
+    end
+  )
 end)
 
 describe("state: ▽ 表示に未確定のローマ字断片が含まれる（回帰テスト）", function()
@@ -210,14 +213,17 @@ describe("state: 確定・キャンセル", function()
     dict.set_dict(parser.parse("かんじ /漢字/"))
   end)
 
-  it("▽状態で confirm すると読みをそのまま確定する（辞書検索していない場合）", function()
-    state.start_midashi("hira", "u")
-    state.input("g")
-    state.input("o")
-    state.confirm()
-    assert.are.equal("うご", last_inserted_text())
-    assert.are.equal("idle", state.get_phase())
-  end)
+  it(
+    "▽状態で confirm すると読みをそのまま確定する（辞書検索していない場合）",
+    function()
+      state.start_midashi("hira", "u")
+      state.input("g")
+      state.input("o")
+      state.confirm()
+      assert.are.equal("うご", last_inserted_text())
+      assert.are.equal("idle", state.get_phase())
+    end
+  )
 
   it("▼状態で confirm すると選択中の候補を確定する", function()
     state.start_midashi("hira", "k")
@@ -304,14 +310,17 @@ describe("state: q によるかな変換確定（▽状態のみ、常にカタ�
     assert.are.equal("idle", state.get_phase())
   end)
 
-  it("カタカナモードの ▽ で q を打っても、q は常にカタカナ確定なので変わらずカタカナになる", function()
-    -- 設計ルール③: <CR> は常にひらがな確定、q は常にカタカナ確定。
-    -- source_mode には依存しない固定ルール。
-    state.start_midashi("kata", "k")
-    state.input("a")
-    state.convert_and_confirm_kana()
-    assert.are.equal("カ", last_inserted_text())
-  end)
+  it(
+    "カタカナモードの ▽ で q を打っても、q は常にカタカナ確定なので変わらずカタカナになる",
+    function()
+      -- 設計ルール③: <CR> は常にひらがな確定、q は常にカタカナ確定。
+      -- source_mode には依存しない固定ルール。
+      state.start_midashi("kata", "k")
+      state.input("a")
+      state.convert_and_confirm_kana()
+      assert.are.equal("カ", last_inserted_text())
+    end
+  )
 end)
 
 describe("state: <CR> は常にひらがな確定（▽状態、ルール③）", function()
@@ -332,5 +341,88 @@ describe("state._render_for_mode (② ▽表示は source_mode に連動)", func
 
   it("kata モードはカタカナに変換する", function()
     assert.are.equal("カンジ", state._render_for_mode("かんじ", "kata"))
+  end)
+end)
+
+describe("state: 送りあり変換（okuri-ari）", function()
+  before_each(function()
+    reset()
+    dict.set_dict(parser.parse(table.concat({
+      ";; okuri-ari entries.",
+      "うごk /動/",
+      ";; okuri-nasi entries.",
+      "かんじ /漢字/",
+    }, "\n")))
+  end)
+
+  it(
+    "送り開始点のあと、子音+母音が確定すると自動的に▼へ遷移する（スペース不要）",
+    function()
+      state.start_midashi("hira", "u")
+      state.input("g")
+      state.input("o") -- reading = "うご"
+      state.start_okuri()
+      state.input("k") -- 子音のみ、まだ▼にならない
+      assert.are.equal("midashi", state.get_phase())
+      state.input("a") -- "ka" -> "か" 確定 -> 自動的に▼へ
+      assert.are.equal("select", state.get_phase())
+    end
+  )
+
+  it("確定すると候補+送り仮名が挿入される", function()
+    state.start_midashi("hira", "u")
+    state.input("g")
+    state.input("o")
+    state.start_okuri()
+    state.input("k")
+    state.input("a")
+    state.confirm()
+    assert.are.equal("動か", last_inserted_text())
+  end)
+
+  it("▽表示は '▽よみ*子音' の形式になる（送り開始点確定後）", function()
+    state.start_midashi("hira", "u")
+    state.input("g")
+    state.input("o")
+    state.start_okuri()
+    state.input("k")
+    local call = last_preedit_call()
+    assert.are.equal("show_midashi", call[1])
+    assert.are.equal("うご", call[2])
+    assert.are.equal("k", call[3])
+  end)
+
+  it("送りありで候補ゼロ件のときは、読み+送り仮名をそのまま確定する", function()
+    state.start_midashi("hira", "a") -- 辞書に無い読み
+    state.input("k") -- pending
+    state.start_okuri()
+    state.input("k")
+    state.input("u") -- "aku" は辞書に無い -> フォールバック
+    assert.are.equal("idle", state.get_phase())
+    assert.are.equal("あく", last_inserted_text())
+  end)
+end)
+
+describe("state: ▼状態で通常キーが来たら自動確定して継続入力できる", function()
+  before_each(function()
+    reset()
+    dict.set_dict(parser.parse("かんじ /漢字/"))
+  end)
+
+  it("▼状態は is_active/get_phase から観測できる（自動確定の前提）", function()
+    state.start_midashi("hira", "k")
+    state.input("a")
+    state.input("n")
+    state.input("j")
+    state.input("i")
+    state.space()
+    assert.are.equal("select", state.get_phase())
+    assert.is_true(state.is_active())
+    -- 実際の「他のキーで自動確定して継続入力する」ルーティングは
+    -- capture.lua 側（handle_henkan_key）の責務なので、
+    -- tests/capture_henkan_routing_spec.lua 側で検証する。
+    state.confirm()
+    assert.are.equal("漢字", last_inserted_text())
+    assert.is_false(state.is_active())
   end)
 end)

@@ -154,23 +154,24 @@ end
 --- <CR>/<BS>/<C-g> はフェーズに関係なく共通、それ以外はフェーズごとに
 --- 意味が変わる（▼状態の space/x は候補送り、▽状態の q はかな変換確定、等）。
 ---@param key string
----@return string 常に "" を返し、henkan アクティブ中は元のキーを必ず消費する
+---@return boolean reprocess true なら、このキーは確定処理のうえで
+---  通常の直接入力として再処理してほしい、という意味（on_key 側が続けて処理する）
 local function handle_henkan_key(key)
   if key == CR then
     henkan_state.confirm()
-    return ""
+    return false
   end
   if key == BS or key == BS_ALT then
     henkan_state.backspace()
-    return ""
+    return false
   end
   if key == CTRL_G then
     henkan_state.cancel()
-    return ""
+    return false
   end
   if key == " " then
     henkan_state.space()
-    return ""
+    return false
   end
 
   local phase = henkan_state.get_phase()
@@ -178,28 +179,38 @@ local function handle_henkan_key(key)
   if phase == "select" then
     if key == "x" then
       henkan_state.prev_candidate()
+      return false
     end
-    -- phase 3 時点では、▼状態でのその他のキーは未定義として無視する。
-    -- 本家 SKK には「候補確定 + 続けて入力」という挙動もあるが、
-    -- 今回はスコープ外として明示的に何もしない。
-    return ""
+    -- space/x 以外のキーが来たら、選択中の候補を確定したうえで、
+    -- このキー自体は「確定後の新しい入力」として通常の直接入力に
+    -- 引き継ぐ（例: "Kanji<SPC>t" -> "漢字" 確定 + "t" から入力継続、
+    -- "Kanji<SPC>T" -> "漢字" 確定 + "T" で新しい ▽ 開始）。
+    henkan_state.confirm()
+    return true
   end
 
   -- ここから phase == "midashi"
   if key == "q" then
     henkan_state.convert_and_confirm_kana()
-    return ""
+    return false
+  end
+
+  if key:match("%u") then
+    -- 送り開始点トリガー: ▽ の中でもう一度大文字キーが来たら、そこから
+    -- 送り仮名の入力が始まる（例: "Ugokasu" の2番目の "K"）。
+    henkan_state.start_okuri()
+    henkan_state.input(key:lower())
+    return false
   end
 
   if is_target_key(key) then
     henkan_state.input(key)
-    return ""
+    return false
   end
 
-  -- 未対応のキー（送りあり変換の開始トリガーとなる大文字キー等は
-  -- phase 4 で対応する）。安全のためセッションを中断する。
+  -- 未対応のキー。安全のためセッションを中断する。
   henkan_state.cancel()
-  return ""
+  return false
 end
 
 ---@param key string 実際に処理されるキー（マッピング適用後）
@@ -227,13 +238,19 @@ local function on_key(key, _typed)
 
   -- ここから hira / kata 共通
 
-  -- henkan (▽/▼) がアクティブなら、直接入力の処理には進まずそちらへ委ねる。
+  -- henkan (▽/▼) がアクティブなら、まずそちらにキーを渡す。
+  -- 確定のうえで「このキーは新しい入力として続けて処理してほしい」
+  -- (reprocess=true) と言われた場合は、直接入力の処理へフォールスルーする
+  -- （▼状態で space/x 以外のキーが来たときの自動確定 + 継続入力）。
   if henkan_state.is_active() then
-    return handle_henkan_key(key)
+    local reprocess = handle_henkan_key(key)
+    if not reprocess then
+      return ""
+    end
   end
 
   -- ▽ 開始トリガー: 未確定バッファが空の状態での大文字キー
-  -- （送りあり変換の送り開始点トリガーは phase 4 で対応する）。
+  -- （▽ の中での送り開始点トリガーは handle_henkan_key 側で処理する）。
   if context.buffer == "" and key:match("%u") then
     henkan_state.start_midashi(context.mode, key:lower())
     return ""
