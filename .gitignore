@@ -2,4 +2,3 @@
 *.swp
 /.tests/
 /.luarc.json
-tneovim.sh
