@@ -190,8 +190,10 @@ local function handle_henkan_key(key)
     -- このキー自体は「確定後の新しい入力」として通常の直接入力に
     -- 引き継ぐ（例: "Kanji<SPC>t" -> "漢字" 確定 + "t" から入力継続、
     -- "Kanji<SPC>T" -> "漢字" 確定 + "T" で新しい ▽ 開始）。
+    -- 矢印キー等の特殊キー（印字可能ASCIIでないもの）は再処理の対象外
+    -- とし、確定だけ行う（literal 挿入すると壊れるため）。
     henkan_state.confirm()
-    return true
+    return is_printable_ascii(key)
   end
 
   -- ここから phase == "midashi"
