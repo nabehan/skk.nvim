@@ -213,9 +213,13 @@ local function handle_henkan_key(key)
     return false
   end
 
-  -- 未対応のキー。安全のためセッションを中断する。
-  henkan_state.cancel()
-  return false
+  -- 未対応のキー（数字・記号等）。以前はセッションを丸ごと中断していたが、
+  -- それだと「▽かん」に続けて "1" や ";" を打っただけで読みが全部消えて
+  -- しまい、使い勝手が悪かった（実際に報告された不具合）。▼状態の
+  -- space/x 以外のキーと同じく、ここまでの読みを確定したうえで、
+  -- このキー自体は新しい入力として直接入力に引き継ぐ。
+  henkan_state.confirm()
+  return true
 end
 
 ---@param key string 実際に処理されるキー（マッピング適用後）
