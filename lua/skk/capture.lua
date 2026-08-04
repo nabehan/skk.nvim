@@ -220,8 +220,10 @@ local function handle_henkan_key(key)
   -- しまい、使い勝手が悪かった（実際に報告された不具合）。▼状態の
   -- space/x 以外のキーと同じく、ここまでの読みを確定したうえで、
   -- このキー自体は新しい入力として直接入力に引き継ぐ。
+  -- 矢印キー等の特殊キー（印字可能ASCIIでないもの）は再処理の対象外
+  -- とし、確定だけ行う（literal 挿入すると壊れるため）。
   henkan_state.confirm()
-  return true
+  return is_printable_ascii(key)
 end
 
 ---@param key string 実際に処理されるキー（マッピング適用後）
