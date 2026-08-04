@@ -226,6 +226,38 @@ local function handle_henkan_key(key)
   return is_printable_ascii(key)
 end
 
+--- henkan 確定直後に「このキーを新しい直接入力として再処理してほしい」
+--- と言われた場合の処理。handle_henkan_key が reprocess=true を返すのは
+--- is_printable_ascii(key) が真の場合に限定してあるので、ここではその
+--- 前提で常に literal に処理しきる。
+--- 【重要】この時点で元の物理キー入力は既に消費済み（on_key が "" を
+--- 返している）なので、通常の直接入力パスと違って Neovim のネイティブ
+--- 処理に頼ることはできない（"" 未対応キーは自分で literal 挿入する）。
+---@param key string
+local function reprocess_direct_key(key)
+  if context.buffer == "" and key:match("%u") then
+    henkan_state.start_midashi(context.mode, key:lower())
+    return
+  end
+
+  if context.buffer == "" then
+    local target = mode_util.char_transition(key, context.mode)
+    if target then
+      context.mode = target
+      return
+    end
+  end
+
+  if is_target_key(key) then
+    process_romaji(key)
+    return
+  end
+
+  -- ローマ字にもモード切替にも該当しない印字可能文字（数字・記号等）を
+  -- そのまま literal に挿入する。
+  replace_before_cursor(0, key)
+end
+
 ---@param key string 実際に処理されるキー（マッピング適用後）
 ---@param _typed string マッピング適用前に打鍵されたキー（未使用）
 ---@return string|nil
@@ -255,11 +287,23 @@ local function on_key(key, _typed)
   -- 確定のうえで「このキーは新しい入力として続けて処理してほしい」
   -- (reprocess=true) と言われた場合は、直接入力の処理へフォールスルーする
   -- （▼状態で space/x 以外のキーが来たときの自動確定 + 継続入力）。
+  --
+  -- 【重要】henkan_state.confirm() 自体のバッファ挿入は vim.schedule で
+  -- 1ティック遅延している（textlock 対策）。もしここで再処理を同期的に
+  -- 実行してしまうと、確定テキストがまだ挿入される前のカーソル位置を
+  -- 新しい ▽ の anchor() が記録してしまい、カーソル位置がずれる
+  -- 不具合になる（実際に発生した）。再処理も同じく vim.schedule で
+  -- 遅延させることで、Neovim の FIFO 実行順序により「確定の挿入 ->
+  -- 再処理」の順序を保証する。
   if henkan_state.is_active() then
     local reprocess = handle_henkan_key(key)
     if not reprocess then
       return ""
     end
+    vim.schedule(function()
+      reprocess_direct_key(key)
+    end)
+    return ""
   end
 
   -- ▽ 開始トリガー: 未確定バッファが空の状態での大文字キー
