@@ -19,6 +19,11 @@ local calls
 ---@return boolean reprocess true なら、このキーは直接入力として再処理する
 local function handle_henkan_key(henkan_state, is_target_key, key)
   local BS = string.char(8)
+  local BS_ALT = string.char(127)
+  -- 実機で確認された、物理 <BS> が termcap 経由で届く内部キーコード
+  -- （K_SPECIAL(0x80) + "kb"）。lua/skk/capture.lua では
+  -- vim.api.nvim_replace_termcodes("<BS>", true, true, true) で取得する。
+  local BS_TERMCODE = string.char(128) .. "kb"
   local CR = string.char(13)
   local CTRL_G = string.char(7)
 
@@ -26,7 +31,7 @@ local function handle_henkan_key(henkan_state, is_target_key, key)
     henkan_state.confirm()
     return false
   end
-  if key == BS then
+  if key == BS or key == BS_ALT or key == BS_TERMCODE then
     henkan_state.backspace()
     return false
   end
@@ -174,11 +179,21 @@ describe("capture henkan routing: 制御キー（フェーズ非依存）", func
     assert.are.equal("confirm", calls[1][1])
   end)
 
-  it("<BS> は backspace を呼ぶ", function()
+  it("<BS> (生バイト 0x08) は backspace を呼ぶ", function()
     local fake = make_fake_state()
     fake._active = true
     fake._phase = "select"
     route(fake, is_target_key, string.char(8))
+    assert.are.equal("backspace", calls[1][1])
+  end)
+
+  it("物理 <BS> が termcap 経由の内部キーコードで届いても backspace を呼ぶ", function()
+    -- 実機で報告されたケース: 物理 Backspace キーが 0x08 でも 0x7F でもなく、
+    -- K_SPECIAL(0x80) + "kb" という3バイト列として vim.on_key() に届いた。
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "select"
+    route(fake, is_target_key, string.char(128) .. "kb")
     assert.are.equal("backspace", calls[1][1])
   end)
 

@@ -57,13 +57,21 @@ local ns_id = nil
 -- レベルで vim.api を呼んでしまい、vim グローバルの無い環境で require
 -- するだけでクラッシュする」ミスを避けるため。これらは全て固定の
 -- ASCII 制御バイトなので string.char で十分）。
-local BS = string.char(8) -- <BS>
+local BS = string.char(8) -- <C-h> はこの生バイトで届く
 -- 物理的な Backspace キーは、ターミナルによって 0x08 (BS) ではなく
 -- 0x7F (DEL) を送ってくることがある（よくある終端エミュレータの差異）。
 -- 直接入力モード側は is_target_key に該当しないキーを汎用的に
 -- リセットする設計なのでこの差異を意識せずに済むが、henkan 側は
 -- <BS> を明示的に検知する必要があるため、両方のバイト値を受け付ける。
 local BS_ALT = string.char(127) -- 一部の環境で Backspace が送る DEL
+-- 実機で確認したところ、物理 Backspace キーは上記どちらの生バイトでもなく
+-- termcap 由来の内部キーコード K_SPECIAL(0x80) + "kb" (0x80,0x6b,0x62)
+-- として vim.on_key() に届くケースがあった（<C-h> は素の 0x08 で届くのに
+-- 対し、物理 <BS> は Neovim 側で termcap の t_kb を経由して特別な内部表現に
+-- 正規化される）。決め打ちのバイト値ではなく Neovim 自身に問い合わせて
+-- 取得する。モジュールのトップレベルで vim.api を呼ぶと vim グローバルの
+-- 無い環境で require するだけでクラッシュするため、M.setup() 内で遅延評価する。
+local BS_TERMCODE = nil
 local CR = string.char(13) -- <CR> (Enter)
 local CTRL_G = string.char(7) -- <C-g>
 
@@ -166,7 +174,7 @@ local function handle_henkan_key(key)
     henkan_state.confirm()
     return false
   end
-  if key == BS or key == BS_ALT then
+  if key == BS or key == BS_ALT or (BS_TERMCODE and key == BS_TERMCODE) then
     henkan_state.backspace()
     return false
   end
@@ -373,6 +381,9 @@ end
 
 --- vim.on_key() のリスナーを登録する。init 時に一度だけ呼ぶ。
 function M.setup()
+  -- 物理 <BS> キーが termcap 経由の特殊な内部キーコードとして届く環境が
+  -- あるため、Neovim 自身に問い合わせて実際の表現を取得しておく。
+  BS_TERMCODE = vim.api.nvim_replace_termcodes("<BS>", true, true, true)
   ns_id = vim.on_key(on_key, ns_id)
 end
 
