@@ -86,13 +86,16 @@ describe("state: ▽ の表示は source_mode に連動する（②）", functio
     assert.are.equal("か", call[2])
   end)
 
-  it("kata モードで開始すると ▽ 表示はカタカナになる（内部の読みはひらがなのまま）", function()
-    state.start_midashi("kata", "k")
-    state.input("a")
-    local call = last_preedit_call()
-    assert.are.equal("show_midashi", call[1])
-    assert.are.equal("カ", call[2])
-  end)
+  it(
+    "kata モードで開始すると ▽ 表示はカタカナになる（内部の読みはひらがなのまま）",
+    function()
+      state.start_midashi("kata", "k")
+      state.input("a")
+      local call = last_preedit_call()
+      assert.are.equal("show_midashi", call[1])
+      assert.are.equal("カ", call[2])
+    end
+  )
 end)
 
 describe("state: ▽ 表示に未確定のローマ字断片が含まれる（回帰テスト）", function()
@@ -146,6 +149,22 @@ describe("state: ▽ 開始・ローマ字入力", function()
     state.space()
     assert.are.equal("select", state.get_phase())
   end)
+
+  it(
+    'Sticky-shift（;）は最初の読みを持たずに ▽ を始められる（start_midashi(mode, "")）',
+    function()
+      -- capture.lua は `;` トリガーのとき first_char に "" を渡す
+      -- （大文字キーと違い、`;` 自体は文字を持たないため）。
+      state.start_midashi("hira", "")
+      assert.are.equal("midashi", state.get_phase())
+      state.input("u")
+      state.input("g")
+      state.input("o")
+      dict.set_dict(parser.parse("うご /動/"))
+      state.space()
+      assert.are.equal("select", state.get_phase())
+    end
+  )
 end)
 
 describe("state: 辞書検索と▼遷移", function()
@@ -210,14 +229,17 @@ describe("state: 確定・キャンセル", function()
     dict.set_dict(parser.parse("かんじ /漢字/"))
   end)
 
-  it("▽状態で confirm すると読みをそのまま確定する（辞書検索していない場合）", function()
-    state.start_midashi("hira", "u")
-    state.input("g")
-    state.input("o")
-    state.confirm()
-    assert.are.equal("うご", last_inserted_text())
-    assert.are.equal("idle", state.get_phase())
-  end)
+  it(
+    "▽状態で confirm すると読みをそのまま確定する（辞書検索していない場合）",
+    function()
+      state.start_midashi("hira", "u")
+      state.input("g")
+      state.input("o")
+      state.confirm()
+      assert.are.equal("うご", last_inserted_text())
+      assert.are.equal("idle", state.get_phase())
+    end
+  )
 
   it("▼状態で confirm すると選択中の候補を確定する", function()
     state.start_midashi("hira", "k")
@@ -304,14 +326,17 @@ describe("state: q によるかな変換確定（▽状態のみ、常にカタ�
     assert.are.equal("idle", state.get_phase())
   end)
 
-  it("カタカナモードの ▽ で q を打っても、q は常にカタカナ確定なので変わらずカタカナになる", function()
-    -- 設計ルール③: <CR> は常にひらがな確定、q は常にカタカナ確定。
-    -- source_mode には依存しない固定ルール。
-    state.start_midashi("kata", "k")
-    state.input("a")
-    state.convert_and_confirm_kana()
-    assert.are.equal("カ", last_inserted_text())
-  end)
+  it(
+    "カタカナモードの ▽ で q を打っても、q は常にカタカナ確定なので変わらずカタカナになる",
+    function()
+      -- 設計ルール③: <CR> は常にひらがな確定、q は常にカタカナ確定。
+      -- source_mode には依存しない固定ルール。
+      state.start_midashi("kata", "k")
+      state.input("a")
+      state.convert_and_confirm_kana()
+      assert.are.equal("カ", last_inserted_text())
+    end
+  )
 end)
 
 describe("state: <CR> は常にひらがな確定（▽状態、ルール③）", function()
@@ -346,16 +371,19 @@ describe("state: 送りあり変換（okuri-ari）", function()
     }, "\n")))
   end)
 
-  it("送り開始点のあと、子音+母音が確定すると自動的に▼へ遷移する（スペース不要）", function()
-    state.start_midashi("hira", "u")
-    state.input("g")
-    state.input("o") -- reading = "うご"
-    state.start_okuri()
-    state.input("k") -- 子音のみ、まだ▼にならない
-    assert.are.equal("midashi", state.get_phase())
-    state.input("a") -- "ka" -> "か" 確定 -> 自動的に▼へ
-    assert.are.equal("select", state.get_phase())
-  end)
+  it(
+    "送り開始点のあと、子音+母音が確定すると自動的に▼へ遷移する（スペース不要）",
+    function()
+      state.start_midashi("hira", "u")
+      state.input("g")
+      state.input("o") -- reading = "うご"
+      state.start_okuri()
+      state.input("k") -- 子音のみ、まだ▼にならない
+      assert.are.equal("midashi", state.get_phase())
+      state.input("a") -- "ka" -> "か" 確定 -> 自動的に▼へ
+      assert.are.equal("select", state.get_phase())
+    end
+  )
 
   it("確定すると候補+送り仮名が挿入される", function()
     state.start_midashi("hira", "u")

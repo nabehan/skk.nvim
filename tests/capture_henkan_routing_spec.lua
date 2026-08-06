@@ -48,11 +48,15 @@ local function handle_henkan_key(henkan_state, is_target_key, key)
 
   if phase == "select" then
     if key == "x" then
-      henkan_state.prev_candidate()
+      henkan_state.prev_page()
       return false
     end
-    -- space/x 以外のキーは、選択中の候補を確定したうえで
-    -- 直接入力として再処理する。
+    if henkan_state.select_by_key(key) then
+      henkan_state.confirm()
+      return false
+    end
+    -- space/x/ホームポジション選択 以外のキーは、選択中の候補を
+    -- 確定したうえで直接入力として再処理する。
     henkan_state.confirm()
     return true
   end
@@ -66,6 +70,11 @@ local function handle_henkan_key(henkan_state, is_target_key, key)
     -- 送り開始点トリガー
     henkan_state.start_okuri()
     henkan_state.input(key:lower())
+    return false
+  end
+  if key == ";" then
+    -- Sticky-shift の送り開始点トリガー（`;` 自体は文字を持たない）
+    henkan_state.start_okuri()
     return false
   end
   if is_target_key(key) then
@@ -94,6 +103,12 @@ local function route(henkan_state, is_target_key, key)
 
   if key:match("%u") then
     henkan_state.start_midashi("hira", key:lower())
+    return
+  end
+
+  if key == ";" then
+    -- Sticky-shift の ▽ 開始トリガー（`;` 自体は文字を持たない）
+    henkan_state.start_midashi("hira", "")
     return
   end
 
@@ -163,6 +178,14 @@ describe("capture henkan routing: ▽ 開始トリガー", function()
     local fake = make_fake_state()
     route(fake, is_target_key, "u")
     assert.are.equal("process_romaji", calls[1][1])
+  end)
+
+  it("Sticky-shift（;）でも start_midashi が呼ばれ、最初の読みは空文字列になる", function()
+    local fake = make_fake_state()
+    route(fake, is_target_key, ";")
+    assert.are.equal("start_midashi", calls[1][1])
+    assert.are.equal("hira", calls[1][2])
+    assert.are.equal("", calls[1][3])
   end)
 end)
 
@@ -254,6 +277,15 @@ describe("capture henkan routing: ▽ (midashi) フェーズ", function()
     assert.are.equal("input", calls[2][1])
     assert.are.equal("k", calls[2][2])
   end)
+
+  it("Sticky-shift（;）は送り開始点トリガーになるが、文字は消費しない", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "midashi"
+    route(fake, is_target_key, ";")
+    assert.are.equal("start_okuri", calls[1][1])
+    assert.are.equal(nil, calls[2])
+  end)
 end)
 
 describe("capture henkan routing: ▼ (select) フェーズ", function()
@@ -296,4 +328,17 @@ describe("capture henkan routing: ▼ (select) フェーズ", function()
     assert.are.equal("start_midashi", calls[2][1])
     assert.are.equal("t", calls[2][3])
   end)
+
+  it(
+    "Sticky-shift（;）は、確定したうえで新しい ▽ が開始される（文字は消費しない）",
+    function()
+      local fake = make_fake_state()
+      fake._active = true
+      fake._phase = "select"
+      route(fake, is_target_key, ";")
+      assert.are.equal("confirm", calls[1][1])
+      assert.are.equal("start_midashi", calls[2][1])
+      assert.are.equal("", calls[2][3])
+    end
+  )
 end)

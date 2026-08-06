@@ -21,10 +21,15 @@ local kana_util = require("skk.kana_util")
 ---@field source_mode "hira"|"kata" このセッションを開始したモード
 ---@field candidates string[] 辞書検索結果の候補一覧
 ---@field index integer 現在選択中の候補（1-indexed）。0 は未検索。
+---@field page integer 候補一覧ウィンドウの現在ページ（0-indexed）
 ---@field reading_input SkkContext 読み入力用の変換エンジン状態（内部専用）
 ---@field okuri_input SkkContext 送り仮名入力用の変換エンジン状態（内部専用）
 local Session = {}
 Session.__index = Session
+
+--- 候補一覧ウィンドウ1ページあたりの候補数。ホームポジション
+--- （a s d f j k l ;）の8キーに対応する。
+Session.PAGE_SIZE = 8
 
 ---@param source_mode "hira"|"kata"
 ---@return SkkHenkanSession
@@ -36,6 +41,7 @@ function Session.new(source_mode)
     source_mode = source_mode,
     candidates = {},
     index = 0,
+    page = 0,
     reading_input = Context.new(),
     okuri_input = Context.new(),
   }, Session)
@@ -124,11 +130,12 @@ function Session:dict_key()
   return self.reading, false
 end
 
---- 検索結果の候補をセットし、先頭候補を選択状態にする。
+--- 検索結果の候補をセットし、先頭候補を選択状態にする（1ページ目）。
 ---@param candidates string[]
 function Session:set_candidates(candidates)
   self.candidates = candidates
   self.index = (#candidates > 0) and 1 or 0
+  self.page = 0
 end
 
 ---@return string|nil
@@ -139,20 +146,65 @@ function Session:current_candidate()
   return nil
 end
 
---- 次候補へ送る（末尾の次は先頭に循環する）。
-function Session:next_candidate()
+--- 現在のページ数（候補が0件なら0）。
+---@return integer
+function Session:page_count()
   if #self.candidates == 0 then
-    return
+    return 0
   end
-  self.index = (self.index % #self.candidates) + 1
+  return math.ceil(#self.candidates / Session.PAGE_SIZE)
 end
 
---- 前候補へ戻す（先頭の前は末尾に循環する）。
-function Session:prev_candidate()
+--- 現在のページに含まれる候補（最大 PAGE_SIZE 件）を先頭から順に返す。
+--- 候補選択ウィンドウの表示に使う（ホームポジションキーとの対応は
+--- 返り値の配列インデックス = a,s,d,f,j,k,l,; の順）。
+---@return string[]
+function Session:page_candidates()
+  local out = {}
   if #self.candidates == 0 then
+    return out
+  end
+  local start = self.page * Session.PAGE_SIZE + 1
+  local stop = math.min(start + Session.PAGE_SIZE - 1, #self.candidates)
+  for i = start, stop do
+    table.insert(out, self.candidates[i])
+  end
+  return out
+end
+
+--- 次の8候補（次ページ）へ切り替える（末尾ページの次は先頭ページに循環する）。
+--- 選択状態はそのページの先頭候補になる。
+function Session:next_page()
+  local count = self:page_count()
+  if count == 0 then
     return
   end
-  self.index = ((self.index - 2) % #self.candidates) + 1
+  self.page = (self.page + 1) % count
+  self.index = self.page * Session.PAGE_SIZE + 1
+end
+
+--- 前の8候補（前ページ）へ戻す（先頭ページの前は末尾ページに循環する）。
+--- 選択状態はそのページの先頭候補になる。
+function Session:prev_page()
+  local count = self:page_count()
+  if count == 0 then
+    return
+  end
+  self.page = (self.page - 1) % count
+  self.index = self.page * Session.PAGE_SIZE + 1
+end
+
+--- 現在のページ内で、ホームポジションキーの位置（1〜8）を指定して
+--- 候補を選択状態にする。その位置に候補が無ければ何もせず nil を返す。
+---@param offset integer 1〜8（a=1, s=2, d=3, f=4, j=5, k=6, l=7, ;=8）
+---@return string|nil selected_candidate
+function Session:select_on_page(offset)
+  local idx = self.page * Session.PAGE_SIZE + offset
+  if idx < 1 or idx > #self.candidates then
+    return nil
+  end
+  self.index = idx
+  return self.candidates[idx]
 end
 
 return Session

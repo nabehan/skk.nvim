@@ -39,7 +39,9 @@
 -- うえで、そのキー自体を新しい入力として直接入力へ引き継ぐ
 -- （"Kanji<SPC>t" -> "漢字"確定+"t"から継続入力、
 --  "Kanji<SPC>T" -> "漢字"確定+"T"で新しい▽開始）。
--- スティッキーシフト（;）と候補選択メニュー表示は未実装（今後の課題）。
+-- Sticky-shift（`;`）は、▽開始・送り開始点トリガーの両方で大文字キーと
+-- 同様に扱う（`;` 自体は文字を持たないマーカーとしてのみ働く）。
+-- 候補選択メニュー表示は未実装（今後の課題）。
 
 local Context = require("skk.context")
 local Input = require("skk.input")
@@ -97,6 +99,27 @@ local EXTRA_TARGET_CHARS = {
   [")"] = true,
   [" "] = true,
 }
+
+--- ▽ 開始・送り開始点トリガーとして扱うキーかどうか。
+--- 大文字キー（Shift+文字、トリガーと1文字目を1打鍵で兼ねる）と
+--- Sticky-shift の `;`（トリガー専用。文字は次の打鍵から別に入力する）
+--- の両方を受け付ける。
+---@param key string
+---@return boolean
+local function is_midashi_trigger_key(key)
+  return key:match("%u") ~= nil or key == ";"
+end
+
+--- 大文字キーは「小文字化した1文字」がそのまま最初の読みになるが、
+--- `;` はトリガー専用で文字を持たないので "" を返す。
+---@param key string
+---@return string
+local function midashi_trigger_first_char(key)
+  if key == ";" then
+    return ""
+  end
+  return key:lower()
+end
 
 ---@param key string
 ---@return boolean
@@ -191,13 +214,24 @@ local function handle_henkan_key(key)
 
   if phase == "select" then
     if key == "x" then
-      henkan_state.prev_candidate()
+      henkan_state.prev_page()
       return false
     end
-    -- space/x 以外のキーが来たら、選択中の候補を確定したうえで、
-    -- このキー自体は「確定後の新しい入力」として通常の直接入力に
-    -- 引き継ぐ（例: "Kanji<SPC>t" -> "漢字" 確定 + "t" から入力継続、
-    -- "Kanji<SPC>T" -> "漢字" 確定 + "T" で新しい ▽ 開始）。
+    -- ホームポジションキー（a s d f j k l ;）は、現在ページの候補一覧
+    -- ウィンドウに表示されている位置に対応する候補を選択・即確定する。
+    -- そのキーの位置に候補が存在しない場合（候補が8件未満で、
+    -- ウィンドウ上でそのキーに何も表示されていない場合）は、
+    -- 下の「空以外のキー」共通処理にフォールバックする
+    -- （選択中の候補を確定したうえで、このキー自体を新しい入力として
+    -- 再処理する）。
+    if henkan_state.select_by_key(key) then
+      henkan_state.confirm()
+      return false
+    end
+    -- space/x/ホームポジション選択 以外のキーが来たら、選択中の候補を
+    -- 確定したうえで、このキー自体は「確定後の新しい入力」として通常の
+    -- 直接入力に引き継ぐ（例: "Kanji<SPC>t" -> "漢字" 確定 + "t" から
+    -- 入力継続、"Kanji<SPC>T" -> "漢字" 確定 + "T" で新しい ▽ 開始）。
     -- 矢印キー等の特殊キー（印字可能ASCIIでないもの）は再処理の対象外
     -- とし、確定だけ行う（literal 挿入すると壊れるため）。
     henkan_state.confirm()
@@ -215,6 +249,14 @@ local function handle_henkan_key(key)
     -- 送り仮名の入力が始まる（例: "Ugokasu" の2番目の "K"）。
     henkan_state.start_okuri()
     henkan_state.input(key:lower())
+    return false
+  end
+
+  if key == ";" then
+    -- Sticky-shift の送り開始点トリガー。大文字キーと違い、`;` 自体は
+    -- 文字を持たないのでマーカーとしてだけ扱う（次の打鍵から送り仮名の
+    -- 子音入力が始まる。例: ";oku;ri" の2番目の ";"）。
+    henkan_state.start_okuri()
     return false
   end
 
@@ -243,8 +285,8 @@ end
 --- 処理に頼ることはできない（"" 未対応キーは自分で literal 挿入する）。
 ---@param key string
 local function reprocess_direct_key(key)
-  if context.buffer == "" and key:match("%u") then
-    henkan_state.start_midashi(context.mode, key:lower())
+  if context.buffer == "" and is_midashi_trigger_key(key) then
+    henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
     return
   end
 
@@ -314,10 +356,12 @@ local function on_key(key, _typed)
     return ""
   end
 
-  -- ▽ 開始トリガー: 未確定バッファが空の状態での大文字キー
+  -- ▽ 開始トリガー: 未確定バッファが空の状態での大文字キー、または
+  -- Sticky-shift の `;`（Shift を使わずに大文字キー相当の操作をする方法。
+  -- `;` 自体は文字を持たないマーカーなので、最初の読みは "" になる）。
   -- （▽ の中での送り開始点トリガーは handle_henkan_key 側で処理する）。
-  if context.buffer == "" and key:match("%u") then
-    henkan_state.start_midashi(context.mode, key:lower())
+  if context.buffer == "" and is_midashi_trigger_key(key) then
+    henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
     return ""
   end
 

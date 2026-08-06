@@ -21,6 +21,8 @@ local mark_id = nil
 ---@type integer|nil
 local anchor_bufnr = nil
 ---@type integer|nil
+local anchor_win = nil
+---@type integer|nil
 local anchor_row = nil
 ---@type integer|nil
 local anchor_col = nil
@@ -84,6 +86,7 @@ function M.anchor()
   local win = vim.api.nvim_get_current_win()
   local cursor = vim.api.nvim_win_get_cursor(win)
   anchor_bufnr = vim.api.nvim_win_get_buf(win)
+  anchor_win = win
   anchor_row = cursor[1] - 1
   anchor_col = cursor[2]
 end
@@ -136,6 +139,7 @@ function M.hide()
   end
   mark_id = nil
   anchor_bufnr = nil
+  anchor_win = nil
   anchor_row = nil
   anchor_col = nil
 end
@@ -147,6 +151,14 @@ end
 ---@return integer|nil col
 function M.anchor_position()
   return anchor_bufnr, anchor_row, anchor_col
+end
+
+--- アンカー位置を記録した時点のウィンドウID。候補選択ウィンドウ
+--- （lua/skk/henkan/candidate_window.lua）を relative="win" で
+--- 配置するために必要。
+---@return integer|nil
+function M.anchor_win()
+  return anchor_win
 end
 
 return M

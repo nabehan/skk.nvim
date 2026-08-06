@@ -18,6 +18,7 @@
 
 local Session = require("skk.henkan.session")
 local preedit = require("skk.henkan.preedit")
+local candidate_window = require("skk.henkan.candidate_window")
 local dict = require("skk.dict")
 local kana_util = require("skk.kana_util")
 
@@ -131,12 +132,24 @@ function M.backspace()
   preedit.show_midashi(midashi_display(), session.okuri_consonant)
 end
 
---- スペース。▽状態なら辞書検索して▼へ、▼状態なら次候補へ。
+--- ▼ 状態の表示を更新する（inline の ▼候補 表示 + 候補一覧ウィンドウ）。
+--- 候補一覧ウィンドウは、現在ページの候補（Session:page_candidates()）を
+--- ホームポジションキー（a s d f j k l ;）と対応させて表示する。
+local function show_select_ui()
+  preedit.show_henkan(session:current_candidate(), render_for_mode(session.okuri_kana or "", session.source_mode))
+  local anchor_win = preedit.anchor_win()
+  local _, row, col = preedit.anchor_position()
+  if anchor_win and row ~= nil and col ~= nil then
+    candidate_window.show(anchor_win, row, col, session:page_candidates())
+  end
+end
+
+--- スペース。▽状態なら辞書検索して▼へ、▼状態なら次ページ（次の8候補）へ。
 function M.space()
   if phase == "midashi" then
     M.search()
   elseif phase == "select" then
-    M.next_candidate()
+    M.next_page()
   end
 end
 
@@ -156,7 +169,7 @@ function M.search()
     return
   end
 
-  preedit.show_henkan(session:current_candidate(), render_for_mode(session.okuri_kana or "", session.source_mode))
+  show_select_ui()
 end
 
 --- 候補ゼロ件のときのフォールバック。
@@ -173,22 +186,46 @@ function M._fallback_no_candidates()
   )
 end
 
---- 次候補（▼状態のみ）。
-function M.next_candidate()
+--- 次ページ（次の8候補、▼状態のみ）。<SPC> に割り当てる。
+function M.next_page()
   if phase ~= "select" or not session then
     return
   end
-  session:next_candidate()
-  preedit.show_henkan(session:current_candidate(), render_for_mode(session.okuri_kana or "", session.source_mode))
+  session:next_page()
+  show_select_ui()
 end
 
---- 前候補、x キー相当（▼状態のみ）。
-function M.prev_candidate()
+--- 前ページ（前の8候補、▼状態のみ）。x キーに割り当てる。
+function M.prev_page()
   if phase ~= "select" or not session then
     return
   end
-  session:prev_candidate()
-  preedit.show_henkan(session:current_candidate(), render_for_mode(session.okuri_kana or "", session.source_mode))
+  session:prev_page()
+  show_select_ui()
+end
+
+--- ホームポジションキー（a s d f j k l ;）による候補選択。
+--- 現在ページの該当する位置に候補が無ければ何もせず nil を返す
+--- （呼び出し側の capture.lua は、nil の場合は従来通り
+--- 「確定して新しい入力として再処理」にフォールバックする）。
+---@param key string
+---@return string|nil selected_candidate
+function M.select_by_key(key)
+  if phase ~= "select" or not session then
+    return nil
+  end
+  local offset = nil
+  for i, k in ipairs(candidate_window.HOME_ROW_KEYS) do
+    if k == key then
+      offset = i
+      break
+    end
+  end
+  if not offset then
+    return nil
+  end
+  local selected = session:select_on_page(offset)
+  return selected
 end
 
 --- ▽の間の q: 読みをカタカナに変換して即確定する。
@@ -220,6 +257,7 @@ end
 function M.confirm_text(text)
   local bufnr, row, col = preedit.anchor_position()
   preedit.hide()
+  candidate_window.hide()
   if bufnr and row ~= nil and col ~= nil then
     vim.schedule(function()
       vim.api.nvim_buf_set_text(bufnr, row, col, row, col, { text })
@@ -233,6 +271,7 @@ end
 --- <C-g> 相当。変換を中断し、何も挿入せずに破棄する。
 function M.cancel()
   preedit.hide()
+  candidate_window.hide()
   phase = "idle"
   session = nil
 end
