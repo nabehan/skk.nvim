@@ -43,16 +43,21 @@ local sticky_row_offset = nil
 --- 見た目の設定。lua/skk/init.lua の M.setup({ candidate_window = {...} }) から
 --- 差し込む。border は nvim_open_win() の "border" と同じ形式を受け付ける
 --- （"rounded"/"single"/"double"/"none"/自前の文字配列 等）。
----@type { border: string|string[] }
-local config = { border = "rounded" }
+--- annotation は候補一覧ウィンドウにアノテーション（辞書の ";注釈"）を
+--- 表示するかどうか。
+---@type { border: string|string[], annotation: boolean }
+local config = { border = "rounded", annotation = true }
 
 --- 見た目のオプションを設定する。lua/skk/init.lua から setup() 時に呼ばれる。
 --- 未指定のキーはデフォルト値のまま維持する。
----@param opts { border: string|string[] }|nil
+---@param opts { border: string|string[], annotation: boolean }|nil
 function M.setup(opts)
   opts = opts or {}
   if opts.border ~= nil then
     config.border = opts.border
+  end
+  if opts.annotation ~= nil then
+    config.annotation = opts.annotation
   end
 end
 
@@ -61,8 +66,8 @@ end
 -- ===================================================================
 
 --- 候補一覧を "a: 候補" 形式の行配列に整形する。アノテーションがあれば
---- "a: 候補 ;注釈" のように末尾に付与する（SKK辞書の生の記法 "候補;注釈"
---- に揃えている）。
+--- （config.annotation が true の場合のみ）"a: 候補 ;注釈" のように
+--- 末尾に付与する（SKK辞書の生の記法 "候補;注釈" に揃えている）。
 ---@param candidates SkkDictCandidate[] 最大7件（Session:page_candidates() の返り値）
 ---@return string[] lines
 local function format_lines(candidates)
@@ -71,7 +76,7 @@ local function format_lines(candidates)
     local key = M.HOME_ROW_KEYS[i]
     if key then
       local line = key .. ": " .. candidate.word
-      if candidate.annotation then
+      if config.annotation and candidate.annotation then
         line = line .. " ;" .. candidate.annotation
       end
       table.insert(lines, line)

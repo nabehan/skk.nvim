@@ -498,3 +498,55 @@ describe("state: ▼状態で通常キーが来たら自動確定して継続入
     assert.is_false(state.is_active())
   end)
 end)
+
+describe('state: abbrev モード（"/" 開始、ASCII見出し）', function()
+  before_each(function()
+    reset()
+  end)
+
+  it("start_abbrev で abbrev フェーズが始まる", function()
+    state.start_abbrev("hira")
+    assert.are.equal("abbrev", state.get_phase())
+    assert.is_true(state.is_active())
+  end)
+
+  it("input_abbrev はローマ字変換せず ASCII をそのまま積む（大文字も可）", function()
+    dict.set_dict(parser.parse("Bug /バグ/"))
+    state.start_abbrev("hira")
+    for ch in ("Bug"):gmatch(".") do
+      state.input_abbrev(ch)
+    end
+    state.space() -- "Bug" というASCII文字列そのものを検索キーにする
+    assert.are.equal("select", state.get_phase())
+    state.confirm()
+    assert.are.equal("バグ", last_inserted_text())
+  end)
+
+  it("<CR> 相当（confirm）は、検索前なら見出しのASCII文字列をそのまま確定する", function()
+    state.start_abbrev("hira")
+    for ch in ("abbrev"):gmatch(".") do
+      state.input_abbrev(ch)
+    end
+    state.confirm()
+    assert.are.equal("abbrev", last_inserted_text())
+  end)
+
+  it("<BS> 相当は1文字ずつ消え、空になったらセッションを中断する", function()
+    state.start_abbrev("hira")
+    state.input_abbrev("x")
+    state.input_abbrev("y")
+    state.backspace()
+    assert.is_true(state.is_active())
+    state.backspace()
+    assert.is_false(state.is_active()) -- 空になったのでキャンセル扱い
+  end)
+
+  it("候補が見つからなければ、ASCII文字列そのままプレーンテキストで確定する", function()
+    state.start_abbrev("hira")
+    for ch in ("nosuchword"):gmatch(".") do
+      state.input_abbrev(ch)
+    end
+    state.space()
+    assert.are.equal("nosuchword", last_inserted_text())
+  end)
+end)

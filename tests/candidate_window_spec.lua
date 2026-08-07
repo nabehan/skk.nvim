@@ -72,4 +72,13 @@ describe("candidate_window.setup", function()
       candidate_window.setup(nil)
     end)
   end)
+
+  it("annotation=false にすると _format_lines がアノテーションを表示しなくなる", function()
+    candidate_window.setup({ annotation = false })
+    local lines = candidate_window._format_lines({
+      { word = "木", annotation = "き。植物" },
+    })
+    assert.are.same({ "a: 木" }, lines) -- アノテーションが付かない
+    candidate_window.setup({ annotation = true }) -- 他のテストに影響しないよう元に戻す
+  end)
 end)

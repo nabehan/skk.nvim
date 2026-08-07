@@ -19,7 +19,7 @@ local kana_util = require("skk.kana_util")
 ---@field okuri_consonant string|nil 送り開始点のローマ字子音。nil なら送りなし。
 ---@field okuri_kana string|nil 確定した送り仮名（ひらがな）。
 ---@field source_mode "hira"|"kata" このセッションを開始したモード
----@field candidates string[] 辞書検索結果の候補一覧
+---@field candidates SkkDictCandidate[] 辞書検索結果の候補一覧（各要素は {word, annotation}）
 ---@field index integer 現在選択中の候補（1-indexed）。0 は未検索。
 ---@field page integer 候補一覧ウィンドウの現在ページ（0-indexed）
 ---@field reading_input SkkContext 読み入力用の変換エンジン状態（内部専用）
@@ -61,6 +61,24 @@ end
 ---@return string
 function Session:reading_pending()
   return self.reading_input.buffer
+end
+
+--- abbrev モード（"/" 開始）用: ローマ字→かな変換を経由せず、入力した
+--- ASCII文字をそのまま見出しに積む（例: "Bug" のような見出しを作れる）。
+---@param char string
+function Session:input_abbrev(char)
+  self.reading = self.reading .. char
+end
+
+--- abbrev モードの見出しを1文字削除する（<BS>相当）。
+--- 見出しは常にASCIIなので、UTF-8境界を気にせず単純に1バイト削ればよい。
+---@return boolean has_more 削除後もセッションを継続すべきか
+function Session:backspace_abbrev()
+  if self.reading == "" then
+    return false
+  end
+  self.reading = self.reading:sub(1, -2)
+  return self.reading ~= ""
 end
 
 --- 読みを1文字分削除する（<BS>相当）。
@@ -133,14 +151,14 @@ function Session:dict_key()
 end
 
 --- 検索結果の候補をセットし、先頭候補を選択状態にする（1ページ目）。
----@param candidates string[]
+---@param candidates SkkDictCandidate[]
 function Session:set_candidates(candidates)
   self.candidates = candidates
   self.index = (#candidates > 0) and 1 or 0
   self.page = 0
 end
 
----@return string|nil
+---@return SkkDictCandidate|nil
 function Session:current_candidate()
   if self.index >= 1 and self.index <= #self.candidates then
     return self.candidates[self.index]
@@ -159,8 +177,8 @@ end
 
 --- 現在のページに含まれる候補（最大 PAGE_SIZE 件）を先頭から順に返す。
 --- 候補選択ウィンドウの表示に使う（ホームポジションキーとの対応は
---- 返り値の配列インデックス = a,s,d,f,j,k,l,; の順）。
----@return string[]
+--- 返り値の配列インデックス = a,s,d,f,j,k,l の順）。
+---@return SkkDictCandidate[]
 function Session:page_candidates()
   local out = {}
   if #self.candidates == 0 then
@@ -199,7 +217,7 @@ end
 --- 現在のページ内で、ホームポジションキーの位置（1〜7）を指定して
 --- 候補を選択状態にする。その位置に候補が無ければ何もせず nil を返す。
 ---@param offset integer 1〜7（a=1, s=2, d=3, f=4, j=5, k=6, l=7）
----@return string|nil selected_candidate
+---@return SkkDictCandidate|nil selected_candidate
 function Session:select_on_page(offset)
   local idx = self.page * Session.PAGE_SIZE + offset
   if idx < 1 or idx > #self.candidates then

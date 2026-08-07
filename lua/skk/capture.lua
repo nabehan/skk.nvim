@@ -41,7 +41,10 @@
 --  "Kanji<SPC>T" -> "漢字"確定+"T"で新しい▽開始）。
 -- Sticky-shift（`;`）は、▽開始・送り開始点トリガーの両方で大文字キーと
 -- 同様に扱う（`;` 自体は文字を持たないマーカーとしてのみ働く）。
--- 候補選択メニュー表示は未実装（今後の課題）。
+-- 候補選択ウィンドウ（ホームポジション a s d f j k l で選択・即確定、
+-- <SPC>/x でページ送り）は lua/skk/henkan/candidate_window.lua が担当する。
+-- abbrev モード（"/" 開始、ASCII文字列そのものを見出しにする変換。
+-- 例: "/Emacs" -> "いーまっくす" のような辞書エントリを引く）にも対応する。
 
 local Context = require("skk.context")
 local Input = require("skk.input")
@@ -53,6 +56,16 @@ local M = {}
 
 local context = Context.new()
 local ns_id = nil
+
+--- lua/skk/init.lua の M.setup() から差し込まれるオプション。
+--- モジュールのトップレベルでは vim.* に触れないプレーンな値のみ
+--- 保持する（この設計方針は他のモジュールと同様）。
+---@type { sticky_shift_enabled: boolean, sticky_shift_key: string, egg_like_newline: boolean }
+local config = {
+  sticky_shift_enabled = true,
+  sticky_shift_key = ";",
+  egg_like_newline = true,
+}
 
 -- 制御キーの raw keycode。vim.api.nvim_replace_termcodes は使わない
 -- （preedit.lua の namespace 生成で踏んだのと同じ「モジュールのトップ
@@ -102,20 +115,24 @@ local EXTRA_TARGET_CHARS = {
 
 --- ▽ 開始・送り開始点トリガーとして扱うキーかどうか。
 --- 大文字キー（Shift+文字、トリガーと1文字目を1打鍵で兼ねる）と
---- Sticky-shift の `;`（トリガー専用。文字は次の打鍵から別に入力する）
---- の両方を受け付ける。
+--- Sticky-shift のキー（デフォルト `;`。トリガー専用で、文字は次の
+--- 打鍵から別に入力する。config.sticky_shift_enabled=false なら
+--- Sticky-shift 自体を無効化する）の両方を受け付ける。
 ---@param key string
 ---@return boolean
 local function is_midashi_trigger_key(key)
-  return key:match("%u") ~= nil or key == ";"
+  if key:match("%u") ~= nil then
+    return true
+  end
+  return config.sticky_shift_enabled and key == config.sticky_shift_key
 end
 
 --- 大文字キーは「小文字化した1文字」がそのまま最初の読みになるが、
---- `;` はトリガー専用で文字を持たないので "" を返す。
+--- Sticky-shift のキーはトリガー専用で文字を持たないので "" を返す。
 ---@param key string
 ---@return string
 local function midashi_trigger_first_char(key)
-  if key == ";" then
+  if config.sticky_shift_enabled and key == config.sticky_shift_key then
     return ""
   end
   return key:lower()
@@ -195,6 +212,20 @@ end
 local function handle_henkan_key(key)
   if key == CR then
     henkan_state.confirm()
+    if not config.egg_like_newline then
+      -- SKK本来の動作: 確定に加えて改行も行う。henkan_state.confirm() の
+      -- バッファ挿入は vim.schedule で1ティック遅延しているので、それより
+      -- 後に <CR> を「本物のキー入力」として再度 feedkeys で送り込むことで、
+      -- FIFO順序（確定 -> 改行）を保証しつつ、改行そのものはNeovim
+      -- ネイティブの処理に委ねる（自前で行分割を実装しない）。
+      -- この時点で henkan は既に非アクティブになっているので、再入力された
+      -- <CR> は on_key の henkan 分岐を通らず、通常の直接入力パス
+      -- （is_target_key に該当しない印字可能ASCII外のキー）としてそのまま
+      -- Neovim に素通しされる。
+      vim.schedule(function()
+        vim.api.nvim_feedkeys(CR, "n", false)
+      end)
+    end
     return false
   end
   if key == BS or key == BS_ALT or (BS_TERMCODE and key == BS_TERMCODE) then
@@ -217,7 +248,7 @@ local function handle_henkan_key(key)
       henkan_state.prev_page()
       return false
     end
-    -- ホームポジションキー（a s d f j k l ;）は、現在ページの候補一覧
+    -- ホームポジションキー（a s d f j k l）は、現在ページの候補一覧
     -- ウィンドウに表示されている位置に対応する候補を選択・即確定する。
     -- そのキーの位置に候補が存在しない場合（候補が8件未満で、
     -- ウィンドウ上でそのキーに何も表示されていない場合）は、
@@ -238,6 +269,23 @@ local function handle_henkan_key(key)
     return is_printable_ascii(key)
   end
 
+  -- ここから phase == "midashi" / "abbrev"
+
+  if phase == "abbrev" then
+    -- abbrev（"/" 開始）は ASCII 文字列そのものを見出しにするモードなので、
+    -- ローマ字変換や大文字トリガー（送り開始点）の解釈をせず、印字可能
+    -- ASCII文字はすべてそのまま見出しに追加する（大文字・記号・数字を含む。
+    -- 例: "Bug", "Emacs" のような見出しをそのまま打てる）。
+    if is_printable_ascii(key) then
+      henkan_state.input_abbrev(key)
+      return false
+    end
+    -- 矢印キー等、印字可能ASCIIでないキーが来たら、ここまでの見出しを
+    -- 確定する（▽状態の「未対応のキー」と同じ考え方）。
+    henkan_state.confirm()
+    return false
+  end
+
   -- ここから phase == "midashi"
   if key == "q" then
     henkan_state.convert_and_confirm_kana()
@@ -252,10 +300,10 @@ local function handle_henkan_key(key)
     return false
   end
 
-  if key == ";" then
-    -- Sticky-shift の送り開始点トリガー。大文字キーと違い、`;` 自体は
+  if config.sticky_shift_enabled and key == config.sticky_shift_key then
+    -- Sticky-shift の送り開始点トリガー。大文字キーと違い、このキー自体は
     -- 文字を持たないのでマーカーとしてだけ扱う（次の打鍵から送り仮名の
-    -- 子音入力が始まる。例: ";oku;ri" の2番目の ";"）。
+    -- 子音入力が始まる。デフォルトのキー（;）なら例: ";oku;ri" の2番目の ";"）。
     henkan_state.start_okuri()
     return false
   end
@@ -287,6 +335,12 @@ end
 local function reprocess_direct_key(key)
   if context.buffer == "" and is_midashi_trigger_key(key) then
     henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
+    return
+  end
+
+  if context.buffer == "" and key == "/" then
+    -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
+    henkan_state.start_abbrev(context.mode)
     return
   end
 
@@ -365,6 +419,12 @@ local function on_key(key, _typed)
     return ""
   end
 
+  if context.buffer == "" and key == "/" then
+    -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
+    henkan_state.start_abbrev(context.mode)
+    return ""
+  end
+
   if context.buffer == "" then
     local target = mode_util.char_transition(key, context.mode)
     if target then
@@ -424,7 +484,19 @@ function M.mode_label()
 end
 
 --- vim.on_key() のリスナーを登録する。init 時に一度だけ呼ぶ。
-function M.setup()
+---@param opts { sticky_shift_enabled: boolean?, sticky_shift_key: string?, egg_like_newline: boolean? }|nil
+function M.setup(opts)
+  opts = opts or {}
+  if opts.sticky_shift_enabled ~= nil then
+    config.sticky_shift_enabled = opts.sticky_shift_enabled
+  end
+  if opts.sticky_shift_key ~= nil then
+    config.sticky_shift_key = opts.sticky_shift_key
+  end
+  if opts.egg_like_newline ~= nil then
+    config.egg_like_newline = opts.egg_like_newline
+  end
+
   -- 物理 <BS> キーが termcap 経由の特殊な内部キーコードとして届く環境が
   -- あるため、Neovim 自身に問い合わせて実際の表現を取得しておく。
   BS_TERMCODE = vim.api.nvim_replace_termcodes("<BS>", true, true, true)

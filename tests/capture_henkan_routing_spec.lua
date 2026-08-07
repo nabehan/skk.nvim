@@ -16,8 +16,10 @@ local calls
 ---@param henkan_state table
 ---@param is_target_key fun(key: string): boolean
 ---@param key string
+---@param sticky_shift { enabled: boolean, key: string }|nil 省略時は { enabled=true, key=";" }
 ---@return boolean reprocess true なら、このキーは直接入力として再処理する
-local function handle_henkan_key(henkan_state, is_target_key, key)
+local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
+  sticky_shift = sticky_shift or { enabled = true, key = ";" }
   local BS = string.char(8)
   local BS_ALT = string.char(127)
   -- 実機で確認された、物理 <BS> が termcap 経由で届く内部キーコード
@@ -61,6 +63,18 @@ local function handle_henkan_key(henkan_state, is_target_key, key)
     return true
   end
 
+  if phase == "abbrev" then
+    if is_target_key(key) or key:match("%u") or key:match("%d") then
+      -- abbrev は印字可能ASCIIならなんでも見出しに追加する（大文字も）。
+      -- このモックの is_target_key は小文字とスペース等しか true にしない
+      -- 簡易版なので、大文字・数字も明示的に許可している。
+      henkan_state.input_abbrev(key)
+      return false
+    end
+    henkan_state.confirm()
+    return false
+  end
+
   -- ここから phase == "midashi"
   if key == "q" then
     henkan_state.convert_and_confirm_kana()
@@ -72,8 +86,8 @@ local function handle_henkan_key(henkan_state, is_target_key, key)
     henkan_state.input(key:lower())
     return false
   end
-  if key == ";" then
-    -- Sticky-shift の送り開始点トリガー（`;` 自体は文字を持たない）
+  if sticky_shift.enabled and key == sticky_shift.key then
+    -- Sticky-shift の送り開始点トリガー（トリガーキー自体は文字を持たない）
     henkan_state.start_okuri()
     return false
   end
@@ -81,8 +95,8 @@ local function handle_henkan_key(henkan_state, is_target_key, key)
     henkan_state.input(key)
     return false
   end
-  henkan_state.cancel()
-  return false
+  henkan_state.confirm()
+  return true
 end
 
 --- lua/skk/capture.lua の on_key と同じルーティングルールを再現する。
@@ -93,9 +107,12 @@ end
 ---@param henkan_state table
 ---@param is_target_key fun(key: string): boolean
 ---@param key string
-local function route(henkan_state, is_target_key, key)
+---@param sticky_shift { enabled: boolean, key: string }|nil 省略時は { enabled=true, key=";" }
+local function route(henkan_state, is_target_key, key, sticky_shift)
+  sticky_shift = sticky_shift or { enabled = true, key = ";" }
+
   if henkan_state.is_active() then
-    local reprocess = handle_henkan_key(henkan_state, is_target_key, key)
+    local reprocess = handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
     if not reprocess then
       return
     end
@@ -106,9 +123,15 @@ local function route(henkan_state, is_target_key, key)
     return
   end
 
-  if key == ";" then
-    -- Sticky-shift の ▽ 開始トリガー（`;` 自体は文字を持たない）
+  if sticky_shift.enabled and key == sticky_shift.key then
+    -- Sticky-shift の ▽ 開始トリガー（トリガーキー自体は文字を持たない）
     henkan_state.start_midashi("hira", "")
+    return
+  end
+
+  if key == "/" then
+    -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
+    henkan_state.start_abbrev("hira")
     return
   end
 
@@ -133,7 +156,9 @@ local function make_fake_state()
   for _, name in ipairs({
     "start_midashi",
     "start_okuri",
+    "start_abbrev",
     "input",
+    "input_abbrev",
     "backspace",
     "space",
     "confirm",
@@ -190,6 +215,47 @@ describe("capture henkan routing: ▽ 開始トリガー", function()
     assert.are.equal("start_midashi", calls[1][1])
     assert.are.equal("hira", calls[1][2])
     assert.are.equal("", calls[1][3])
+  end)
+
+  it("'/' では start_abbrev が呼ばれる（abbrevモード開始）", function()
+    local fake = make_fake_state()
+    route(fake, is_target_key, "/")
+    assert.are.equal("start_abbrev", calls[1][1])
+    assert.are.equal("hira", calls[1][2])
+  end)
+end)
+
+describe("capture henkan routing: Sticky-shift の設定（有効/無効・キー変更）", function()
+  before_each(function()
+    calls = {}
+  end)
+
+  it("sticky_shift_enabled=false なら ';' はただの文字として通常入力になる", function()
+    local fake = make_fake_state()
+    route(fake, is_target_key, ";", { enabled = false, key = ";" })
+    assert.are.equal(nil, calls[1]) -- is_target_key(";") は false（記号のため）なので何も呼ばれない
+  end)
+
+  it("sticky_shift_key を変更すると、そのキーで start_midashi が呼ばれる", function()
+    local fake = make_fake_state()
+    route(fake, is_target_key, "'", { enabled = true, key = "'" })
+    assert.are.equal("start_midashi", calls[1][1])
+    assert.are.equal("", calls[1][3])
+  end)
+
+  it("sticky_shift_key を変更すると、元の ';' はもう Sticky-shift として扱われない", function()
+    local fake = make_fake_state()
+    route(fake, is_target_key, ";", { enabled = true, key = "'" })
+    assert.are.equal(nil, calls[1])
+  end)
+
+  it("▽の中でも、変更後のキーが送り開始点トリガーとして働く", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "midashi"
+    route(fake, is_target_key, "'", { enabled = true, key = "'" })
+    assert.are.equal("start_okuri", calls[1][1])
+    assert.are.equal(nil, calls[2])
   end)
 end)
 
@@ -288,6 +354,38 @@ describe("capture henkan routing: ▽ (midashi) フェーズ", function()
     fake._phase = "midashi"
     route(fake, is_target_key, ";")
     assert.are.equal("start_okuri", calls[1][1])
+    assert.are.equal(nil, calls[2])
+  end)
+end)
+
+describe('capture henkan routing: abbrev フェーズ（"/" 開始、ASCII見出し）', function()
+  before_each(function()
+    calls = {}
+  end)
+
+  it("印字可能ASCII文字（大文字含む）はそのまま input_abbrev に渡る", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "abbrev"
+    route(fake, is_target_key, "B")
+    assert.are.equal("input_abbrev", calls[1][1])
+    assert.are.equal("B", calls[1][2]) -- 小文字化されない（見出しはASCIIそのまま）
+  end)
+
+  it("スペースは（フェーズ非依存の共通処理で）space を呼ぶ", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "abbrev"
+    route(fake, is_target_key, " ")
+    assert.are.equal("space", calls[1][1])
+  end)
+
+  it("矢印キー等、印字可能ASCIIでないキーは確定のみ行う（再処理しない）", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "abbrev"
+    route(fake, is_target_key, string.char(27)) -- ESC相当（印字可能ASCII外）を模したダミー
+    assert.are.equal("confirm", calls[1][1])
     assert.are.equal(nil, calls[2])
   end)
 end)

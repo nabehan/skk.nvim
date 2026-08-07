@@ -67,6 +67,34 @@ describe("Session:backspace_reading", function()
   end)
 end)
 
+describe("Session:input_abbrev / Session:backspace_abbrev", function()
+  it("input_abbrev はローマ字変換を経由せず ASCII 文字をそのまま積む", function()
+    local s = Session.new("hira")
+    for ch in ("Bug"):gmatch(".") do
+      s:input_abbrev(ch)
+    end
+    assert.are.equal("Bug", s.reading) -- 大文字もそのまま（かな変換されない）
+  end)
+
+  it("backspace_abbrev は1バイトずつ削る", function()
+    local s = Session.new("hira")
+    for ch in ("Bug"):gmatch(".") do
+      s:input_abbrev(ch)
+    end
+    local has_more = s:backspace_abbrev()
+    assert.is_true(has_more)
+    assert.are.equal("Bu", s.reading)
+  end)
+
+  it("backspace_abbrev で最後の1文字を消すと false を返し、reading は空になる", function()
+    local s = Session.new("hira")
+    s:input_abbrev("x")
+    local has_more = s:backspace_abbrev()
+    assert.is_false(has_more)
+    assert.are.equal("", s.reading)
+  end)
+end)
+
 describe("Session:dict_key", function()
   it("送りなしの場合は reading そのもの", function()
     local s = Session.new("hira")

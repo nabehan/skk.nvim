@@ -24,7 +24,7 @@ local kana_util = require("skk.kana_util")
 
 local M = {}
 
----@alias SkkHenkanPhase "idle"|"midashi"|"select"
+---@alias SkkHenkanPhase "idle"|"midashi"|"select"|"abbrev"
 
 ---@type SkkHenkanPhase
 local phase = "idle"
@@ -91,7 +91,27 @@ function M.start_okuri()
   session:start_okuri()
 end
 
---- ▽の間にローマ字を1文字追加する。送り開始点が設定済みなら
+--- abbrev モード（"/" 開始）を始める。capture.lua が "/" キー検知時に呼ぶ。
+--- 通常の ▽（ローマ字→かな変換）と違い、入力した ASCII 文字をそのまま
+--- 見出しとして積む（辞書検索キーも ASCII 文字列そのもの）。
+---@param mode "hira"|"kata" 開始したモード（表示・確定後の入力継続に使う）
+function M.start_abbrev(mode)
+  phase = "abbrev"
+  session = Session.new(mode)
+  preedit.anchor()
+  preedit.show_abbrev(session.reading)
+end
+
+--- abbrev モードの間に ASCII 文字を1文字追加する。
+---@param char string
+function M.input_abbrev(char)
+  if phase ~= "abbrev" or not session then
+    return
+  end
+  session:input_abbrev(char)
+  preedit.show_abbrev(session.reading)
+end --- ▽の間にローマ字を1文字追加する。送り開始点が設定済みなら
+
 --- 送り仮名側の入力として扱い、子音+母音が確定した瞬間に
 --- 自動的に辞書検索（▼への遷移）を行う。
 ---@param char string
@@ -124,6 +144,17 @@ function M.backspace()
     M.cancel()
     return
   end
+
+  if phase == "abbrev" then
+    local has_more = session:backspace_abbrev()
+    if not has_more then
+      M.cancel()
+      return
+    end
+    preedit.show_abbrev(session.reading)
+    return
+  end
+
   local has_more = session:backspace_reading()
   if not has_more then
     M.cancel()
@@ -148,22 +179,32 @@ local function show_select_ui()
   end
 end
 
---- スペース。▽状態なら辞書検索して▼へ、▼状態なら次ページ（次の8候補）へ。
+--- スペース。▽/abbrev 状態なら辞書検索して▼へ、▼状態なら次ページ（次の7候補）へ。
 function M.space()
-  if phase == "midashi" then
+  if phase == "midashi" or phase == "abbrev" then
     M.search()
   elseif phase == "select" then
     M.next_page()
   end
 end
 
---- 辞書検索して▼へ遷移する（phase 3: 送りなしのみ）。
+--- 辞書検索して▼へ遷移する。
+--- ▽状態（phase=="midashi"）: 送りなし/送りありの通常変換（Session:dict_key() が
+--- 送り仮名の有無を判定する）。
+--- abbrev状態（phase=="abbrev"）: 見出しの ASCII 文字列そのものを検索キーにする
+--- （送りありという概念が無いので常に has_okuri=false）。
 function M.search()
-  if phase ~= "midashi" or not session or session.reading == "" then
+  if (phase ~= "midashi" and phase ~= "abbrev") or not session or session.reading == "" then
     return
   end
 
-  local key, has_okuri = session:dict_key()
+  local key, has_okuri
+  if phase == "abbrev" then
+    key, has_okuri = session.reading, false
+  else
+    key, has_okuri = session:dict_key()
+  end
+
   local candidates = dict.lookup(key, has_okuri)
   session:set_candidates(candidates)
   phase = "select"
@@ -243,16 +284,17 @@ function M.convert_and_confirm_kana()
   M.confirm_text(kana_util.to_katakana(session.reading))
 end
 
---- 確定操作（Enter 等）。▼状態なら選択中の候補+送り仮名、▽状態なら
---- 読みをそのまま（常にひらがな、ルール③）確定する。
+--- 確定操作（Enter 等）。▼状態なら選択中の候補+送り仮名、▽/abbrev状態なら
+--- 見出しをそのまま確定する（▽は常にひらがな、ルール③。abbrevはASCIIそのもの）。
 function M.confirm()
   if phase == "select" and session then
     local okurigana = render_for_mode(session.okuri_kana or "", session.source_mode)
     local candidate = session:current_candidate()
     M.confirm_text((candidate and candidate.word or "") .. okurigana)
-  elseif phase == "midashi" and session then
+  elseif (phase == "midashi" or phase == "abbrev") and session then
     -- <CR> は常にひらがな確定。session.reading は元々ひらがなの内部表現
     -- なので、そのまま使えばよい（source_mode に関係なく変換しない）。
+    -- abbrev の場合、session.reading は元々ASCII文字列なのでそのまま。
     M.confirm_text(session.reading)
   end
 end
