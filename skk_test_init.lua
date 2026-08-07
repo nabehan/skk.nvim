@@ -1,10 +1,13 @@
 -- このディレクトリ（skk.nvim）だけを runtimepath に追加する
 vim.opt.runtimepath:append(vim.fn.getcwd())
 
--- require("skk").setup()
 require("skk").setup({
-  candidate_window = { border = "single" },
+  enter_key = "<C-j>", -- 半角英数/全角英数 -> ひらがな。henkan 中は <CR> 相当（確定）。省略時 "<C-j>"
+  candidate_window = {
+    border = "rounded", -- "rounded"/"single"/"double"/"none"/ 省略時 "rounded"
+  },
 })
+
 -- ===================================================================
 -- 動作確認用の辞書読み込み
 -- ===================================================================

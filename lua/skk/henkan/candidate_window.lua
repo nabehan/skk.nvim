@@ -28,6 +28,17 @@ M.HOME_ROW_KEYS = { "a", "s", "d", "f", "j", "k", "l" }
 local win = nil
 ---@type integer|nil
 local buf = nil
+--- 現在の変換セッション中に一度決めた配置（"NW"=下, "SW"=上）を覚えて
+--- おき、ウィンドウが開いている間は使い回す（sticky）。<SPC> でページを
+--- 送って候補数が減り、本来なら下にも収まるようになった場合でも、一度
+--- 上に出したなら上に出し続ける。視線移動を減らすための仕様
+--- （ユーザーからのフィードバックで判明した挙動）。
+--- ウィンドウを閉じたとき（M.hide()）にリセットし、次の変換セッションでは
+--- 改めて計算し直す。
+---@type "NW"|"SW"|nil
+local sticky_corner = nil
+---@type integer|nil
+local sticky_row_offset = nil
 
 --- 見た目の設定。lua/skk/init.lua の M.setup({ candidate_window = {...} }) から
 --- 差し込む。border は nvim_open_win() の "border" と同じ形式を受け付ける
@@ -166,7 +177,16 @@ function M.show(anchor_win, anchor_row, anchor_col, candidates)
   end
   local height = #lines
 
-  local anchor_corner, row_offset = compute_placement(anchor_win, anchor_row, height)
+  -- ウィンドウが既に開いている（＝同じ変換セッション中にページ送り等で
+  -- 再描画している）間は、最初に決めた配置を使い回す。閉じている状態
+  -- （新しい変換セッションの最初の表示）でだけ、改めて計算し直す。
+  local anchor_corner, row_offset
+  if win and vim.api.nvim_win_is_valid(win) and sticky_corner then
+    anchor_corner, row_offset = sticky_corner, sticky_row_offset
+  else
+    anchor_corner, row_offset = compute_placement(anchor_win, anchor_row, height)
+    sticky_corner, sticky_row_offset = anchor_corner, row_offset
+  end
 
   local win_config = {
     relative = "win",
@@ -191,12 +211,15 @@ function M.show(anchor_win, anchor_row, anchor_col, candidates)
 end
 
 --- ウィンドウを閉じる。確定・キャンセル・ページ移動で候補が0件に
---- なった場合等に呼ぶ。
+--- なった場合等に呼ぶ。次の変換セッションで配置を再計算できるよう、
+--- sticky な配置の記憶もここでリセットする。
 function M.hide()
   if win and vim.api.nvim_win_is_valid(win) then
     vim.api.nvim_win_close(win, true)
   end
   win = nil
+  sticky_corner = nil
+  sticky_row_offset = nil
 end
 
 return M
