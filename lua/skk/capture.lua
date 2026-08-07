@@ -333,6 +333,14 @@ end
 --- 処理に頼ることはできない（"" 未対応キーは自分で literal 挿入する）。
 ---@param key string
 local function reprocess_direct_key(key)
+  if context.buffer == "" then
+    local target = mode_util.char_transition(key, context.mode)
+    if target then
+      context.mode = target
+      return
+    end
+  end
+
   if context.buffer == "" and is_midashi_trigger_key(key) then
     henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
     return
@@ -344,14 +352,6 @@ local function reprocess_direct_key(key)
     return
   end
 
-  if context.buffer == "" then
-    local target = mode_util.char_transition(key, context.mode)
-    if target then
-      context.mode = target
-      return
-    end
-  end
-
   if is_target_key(key) then
     process_romaji(key)
     return
@@ -361,6 +361,36 @@ local function reprocess_direct_key(key)
   -- そのまま literal に挿入する。
   replace_before_cursor(0, key)
 end
+
+-- local function reprocess_direct_key(key)
+--   if context.buffer == "" and is_midashi_trigger_key(key) then
+--     henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
+--     return
+--   end
+--
+--   if context.buffer == "" and key == "/" then
+--     -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
+--     henkan_state.start_abbrev(context.mode)
+--     return
+--   end
+--
+--   if context.buffer == "" then
+--     local target = mode_util.char_transition(key, context.mode)
+--     if target then
+--       context.mode = target
+--       return
+--     end
+--   end
+--
+--   if is_target_key(key) then
+--     process_romaji(key)
+--     return
+--   end
+--
+--   -- ローマ字にもモード切替にも該当しない印字可能文字（数字・記号等）を
+--   -- そのまま literal に挿入する。
+--   replace_before_cursor(0, key)
+-- end
 
 ---@param key string 実際に処理されるキー（マッピング適用後）
 ---@param _typed string マッピング適用前に打鍵されたキー（未使用）
@@ -414,6 +444,14 @@ local function on_key(key, _typed)
   -- Sticky-shift の `;`（Shift を使わずに大文字キー相当の操作をする方法。
   -- `;` 自体は文字を持たないマーカーなので、最初の読みは "" になる）。
   -- （▽ の中での送り開始点トリガーは handle_henkan_key 側で処理する）。
+  if context.buffer == "" then
+    local target = mode_util.char_transition(key, context.mode)
+    if target then
+      context.mode = target
+      return "" -- 切り替えキー自体は破棄する（挿入しない）
+    end
+  end
+
   if context.buffer == "" and is_midashi_trigger_key(key) then
     henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
     return ""
@@ -425,13 +463,24 @@ local function on_key(key, _typed)
     return ""
   end
 
-  if context.buffer == "" then
-    local target = mode_util.char_transition(key, context.mode)
-    if target then
-      context.mode = target
-      return "" -- 切り替えキー自体は破棄する（挿入しない）
-    end
-  end
+  -- if context.buffer == "" and is_midashi_trigger_key(key) then
+  --   henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
+  --   return ""
+  -- end
+  --
+  -- if context.buffer == "" and key == "/" then
+  --   -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
+  --   henkan_state.start_abbrev(context.mode)
+  --   return ""
+  -- end
+  --
+  -- if context.buffer == "" then
+  --   local target = mode_util.char_transition(key, context.mode)
+  --   if target then
+  --     context.mode = target
+  --     return "" -- 切り替えキー自体は破棄する（挿入しない）
+  --   end
+  -- end
 
   if not is_target_key(key) then
     -- 未確定のローマ字が画面に literal 表示されている状態で、ローマ字
