@@ -1,8 +1,10 @@
 -- このディレクトリ（skk.nvim）だけを runtimepath に追加する
 vim.opt.runtimepath:append(vim.fn.getcwd())
 
-require("skk").setup()
-
+-- require("skk").setup()
+require("skk").setup({
+  candidate_window = { border = "single" },
+})
 -- ===================================================================
 -- 動作確認用の辞書読み込み
 -- ===================================================================
@@ -43,6 +45,8 @@ else
   }, "\n")
   dict.set_dict(parser.parse(mini_jisyo))
   vim.schedule(function()
-    vim.notify("skk.nvim: using built-in mini dictionary (SKK_JISYO_PATH で実際の辞書ファイルを指定できます)")
+    vim.notify(
+      "skk.nvim: using built-in mini dictionary (SKK_JISYO_PATH で実際の辞書ファイルを指定できます)"
+    )
   end)
 end

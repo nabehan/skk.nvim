@@ -120,36 +120,71 @@ describe("Session:input_okuri", function()
   end)
 end)
 
-describe("Session candidate navigation", function()
-  it("set_candidates は先頭候補を選択状態にする", function()
+describe("Session candidate navigation (ページング, PAGE_SIZE=7)", function()
+  it("set_candidates は先頭候補を選択状態にし、1ページ目を表示する", function()
     local s = Session.new("hira")
     s:set_candidates({ "動", "働", "慟" })
     assert.are.equal("動", s:current_candidate())
+    assert.are.equal(0, s.page)
   end)
 
-  it("next_candidate は循環する", function()
+  it("page_candidates は現在ページの候補（最大7件）だけを返す", function()
     local s = Session.new("hira")
-    s:set_candidates({ "動", "働", "慟" })
-    s:next_candidate()
-    assert.are.equal("働", s:current_candidate())
-    s:next_candidate()
-    assert.are.equal("慟", s:current_candidate())
-    s:next_candidate() -- 末尾の次は先頭に戻る
-    assert.are.equal("動", s:current_candidate())
+    -- 9件 -> 1ページ目7件、2ページ目2件
+    local candidates = { "1", "2", "3", "4", "5", "6", "7", "8", "9" }
+    s:set_candidates(candidates)
+    assert.are.same({ "1", "2", "3", "4", "5", "6", "7" }, s:page_candidates())
+    assert.are.equal(2, s:page_count())
   end)
 
-  it("prev_candidate は循環する", function()
+  it("next_page で次の7候補に切り替わり、選択はそのページの先頭になる", function()
+    local candidates = { "1", "2", "3", "4", "5", "6", "7", "8", "9" }
     local s = Session.new("hira")
-    s:set_candidates({ "動", "働", "慟" })
-    s:prev_candidate() -- 先頭の前は末尾に戻る
-    assert.are.equal("慟", s:current_candidate())
-    s:prev_candidate()
+    s:set_candidates(candidates)
+    s:next_page()
+    assert.are.equal(1, s.page)
+    assert.are.same({ "8", "9" }, s:page_candidates())
+    assert.are.equal("8", s:current_candidate())
+    s:next_page() -- 末尾ページの次は先頭ページに戻る
+    assert.are.equal(0, s.page)
+    assert.are.equal("1", s:current_candidate())
+  end)
+
+  it("prev_page で前の7候補に戻る（先頭ページの前は末尾ページに循環する）", function()
+    local candidates = { "1", "2", "3", "4", "5", "6", "7", "8", "9" }
+    local s = Session.new("hira")
+    s:set_candidates(candidates)
+    s:prev_page()
+    assert.are.equal(1, s.page)
+    assert.are.same({ "8", "9" }, s:page_candidates())
+  end)
+
+  it("select_on_page は指定位置の候補を選択する（1=a, 2=s, ...）", function()
+    local candidates = { "動", "働", "慟" }
+    local s = Session.new("hira")
+    s:set_candidates(candidates)
+    local selected = s:select_on_page(2) -- s キー相当
+    assert.are.equal("働", selected)
     assert.are.equal("働", s:current_candidate())
   end)
 
-  it("候補が無い場合 current_candidate は nil", function()
+  it(
+    "select_on_page は、そのページに候補が無い位置なら nil を返し、選択状態は変えない",
+    function()
+      local candidates = { "動", "働", "慟" } -- 3件しかない
+      local s = Session.new("hira")
+      s:set_candidates(candidates)
+      local selected = s:select_on_page(5) -- j キー相当、候補なし
+      assert.is_nil(selected)
+      assert.are.equal("動", s:current_candidate()) -- 選択状態は変わらない
+    end
+  )
+
+  it("候補が無い場合 current_candidate は nil、page_count は0", function()
     local s = Session.new("hira")
     s:set_candidates({})
     assert.is_nil(s:current_candidate())
+    assert.are.equal(0, s:page_count())
+    assert.are.same({}, s:page_candidates())
   end)
 end)

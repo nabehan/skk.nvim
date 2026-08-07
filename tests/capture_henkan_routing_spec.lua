@@ -139,8 +139,9 @@ local function make_fake_state()
     "confirm",
     "cancel",
     "convert_and_confirm_kana",
-    "next_candidate",
-    "prev_candidate",
+    "next_page",
+    "prev_page",
+    "select_by_key",
   }) do
     fake[name] = function(...)
       table.insert(calls, { name, ... })
@@ -149,6 +150,9 @@ local function make_fake_state()
         fake._active = false
         fake._phase = "idle"
       end
+      -- select_by_key はデフォルトで nil（＝そのキーの位置に候補が無い）を
+      -- 返す。「候補が見つかった」ケースは各テストで
+      -- fake.select_by_key を個別に差し替えて検証する。
     end
   end
   return fake
@@ -293,7 +297,7 @@ describe("capture henkan routing: ▼ (select) フェーズ", function()
     calls = {}
   end)
 
-  it("スペースは space を呼ぶ（次候補は state.space 内部で処理）", function()
+  it("スペースは space を呼ぶ（次ページは state.space 内部で処理）", function()
     local fake = make_fake_state()
     fake._active = true
     fake._phase = "select"
@@ -301,44 +305,83 @@ describe("capture henkan routing: ▼ (select) フェーズ", function()
     assert.are.equal("space", calls[1][1])
   end)
 
-  it("x は prev_candidate を呼ぶ", function()
+  it("x は prev_page を呼ぶ", function()
     local fake = make_fake_state()
     fake._active = true
     fake._phase = "select"
     route(fake, is_target_key, "x")
-    assert.are.equal("prev_candidate", calls[1][1])
+    assert.are.equal("prev_page", calls[1][1])
   end)
 
-  it("小文字キーは、確定したうえで直接入力として再処理される", function()
-    local fake = make_fake_state()
-    fake._active = true
-    fake._phase = "select"
-    route(fake, is_target_key, "t")
-    assert.are.equal("confirm", calls[1][1])
-    assert.are.equal("process_romaji", calls[2][1])
-    assert.are.equal("t", calls[2][2])
-  end)
+  it(
+    "ホームポジションキー（a s d f j k l）で、その位置に候補があれば選択して即確定する",
+    function()
+      local fake = make_fake_state()
+      fake._active = true
+      fake._phase = "select"
+      fake.select_by_key = function(key)
+        table.insert(calls, { "select_by_key", key })
+        return "期" -- 2番目（s）の候補が見つかったことにする
+      end
+      route(fake, is_target_key, "s")
+      assert.are.equal("select_by_key", calls[1][1])
+      assert.are.equal("s", calls[1][2])
+      assert.are.equal("confirm", calls[2][1])
+      -- 選択・確定のみで、直接入力としての再処理は起きない
+      assert.are.equal(nil, calls[3])
+    end
+  )
+
+  it(
+    "ホームポジションキーでも、その位置に候補が無ければ確定したうえで直接入力として再処理される",
+    function()
+      local fake = make_fake_state()
+      fake._active = true
+      fake._phase = "select"
+      route(fake, is_target_key, "s") -- デフォルトの select_by_key は nil を返す
+      assert.are.equal("select_by_key", calls[1][1])
+      assert.are.equal("confirm", calls[2][1])
+      assert.are.equal("process_romaji", calls[3][1])
+      assert.are.equal("s", calls[3][2])
+    end
+  )
+
+  it(
+    "小文字キー（ホームポジション以外）は、確定したうえで直接入力として再処理される",
+    function()
+      local fake = make_fake_state()
+      fake._active = true
+      fake._phase = "select"
+      route(fake, is_target_key, "t")
+      assert.are.equal("select_by_key", calls[1][1])
+      assert.are.equal("confirm", calls[2][1])
+      assert.are.equal("process_romaji", calls[3][1])
+      assert.are.equal("t", calls[3][2])
+    end
+  )
 
   it("大文字キーは、確定したうえで新しい ▽ が開始される", function()
     local fake = make_fake_state()
     fake._active = true
     fake._phase = "select"
     route(fake, is_target_key, "T")
-    assert.are.equal("confirm", calls[1][1])
-    assert.are.equal("start_midashi", calls[2][1])
-    assert.are.equal("t", calls[2][3])
+    assert.are.equal("select_by_key", calls[1][1])
+    assert.are.equal("confirm", calls[2][1])
+    assert.are.equal("start_midashi", calls[3][1])
+    assert.are.equal("t", calls[3][3])
   end)
 
   it(
-    "Sticky-shift（;）は、確定したうえで新しい ▽ が開始される（文字は消費しない）",
+    "Sticky-shift（;）はホームポジションキーではないので、確定したうえで新しい ▽ が開始される",
     function()
       local fake = make_fake_state()
       fake._active = true
       fake._phase = "select"
       route(fake, is_target_key, ";")
-      assert.are.equal("confirm", calls[1][1])
-      assert.are.equal("start_midashi", calls[2][1])
-      assert.are.equal("", calls[2][3])
+      assert.are.equal("select_by_key", calls[1][1])
+      assert.are.equal("confirm", calls[2][1])
+      assert.are.equal("start_midashi", calls[3][1])
+      assert.are.equal("", calls[3][3])
     end
   )
 end)

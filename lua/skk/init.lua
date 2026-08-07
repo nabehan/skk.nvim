@@ -8,11 +8,15 @@
 
 local capture = require("skk.capture")
 local henkan_state = require("skk.henkan.state")
+local candidate_window = require("skk.henkan.candidate_window")
 
 local M = {}
 
 ---@class SkkSetupOpts
 ---@field enter_key string? 半角英数/全角英数 -> ひらがな。henkan 中は確定。デフォルト "<C-j>"
+---@field candidate_window { border: string|string[] }? 候補一覧ウィンドウの見た目。
+---  border は nvim_open_win() の "border" と同じ形式（"rounded"/"single"/"double"/
+---  "none"/自前の文字配列 等）。デフォルト "rounded"。
 
 --- ▽/▼ 表示用のハイライトグループのデフォルトを定義する。
 --- 既にユーザーやカラースキームが定義済みなら上書きしない (default = true)。
@@ -28,6 +32,7 @@ function M.setup(opts)
 
   setup_highlights()
   capture.setup()
+  candidate_window.setup(opts.candidate_window or {})
 
   local function notify_mode()
     vim.notify("skk.nvim: " .. capture.mode_label())

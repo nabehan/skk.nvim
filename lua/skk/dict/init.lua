@@ -9,7 +9,7 @@
 
 local M = {}
 
----@type { okuri_ari: table<string,string[]>, okuri_nasi: table<string,string[]> }|nil
+---@type { okuri_ari: table<string,SkkDictCandidate[]>, okuri_nasi: table<string,SkkDictCandidate[]> }|nil
 local loaded_dict = nil
 
 --- パース済みの辞書データを登録する（jisyo_parser.parse() の戻り値）。
@@ -27,7 +27,7 @@ end
 --- 読みから候補を検索する。
 ---@param reading string 送りなしの場合は読みそのもの、送りありの場合は reading..okuri_consonant（例: "うごk"）
 ---@param has_okuri boolean
----@return string[] candidates 見つからなければ空配列
+---@return SkkDictCandidate[] candidates 見つからなければ空配列。各要素は {word, annotation} のテーブル。
 function M.lookup(reading, has_okuri)
   if not loaded_dict then
     return {}

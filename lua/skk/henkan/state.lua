@@ -136,7 +136,11 @@ end
 --- 候補一覧ウィンドウは、現在ページの候補（Session:page_candidates()）を
 --- ホームポジションキー（a s d f j k l ;）と対応させて表示する。
 local function show_select_ui()
-  preedit.show_henkan(session:current_candidate(), render_for_mode(session.okuri_kana or "", session.source_mode))
+  local candidate = session:current_candidate()
+  preedit.show_henkan(
+    candidate and candidate.word or nil,
+    render_for_mode(session.okuri_kana or "", session.source_mode)
+  )
   local anchor_win = preedit.anchor_win()
   local _, row, col = preedit.anchor_position()
   if anchor_win and row ~= nil and col ~= nil then
@@ -204,12 +208,12 @@ function M.prev_page()
   show_select_ui()
 end
 
---- ホームポジションキー（a s d f j k l ;）による候補選択。
+--- ホームポジションキー（a s d f j k l）による候補選択。
 --- 現在ページの該当する位置に候補が無ければ何もせず nil を返す
 --- （呼び出し側の capture.lua は、nil の場合は従来通り
 --- 「確定して新しい入力として再処理」にフォールバックする）。
 ---@param key string
----@return string|nil selected_candidate
+---@return SkkDictCandidate|nil selected_candidate
 function M.select_by_key(key)
   if phase ~= "select" or not session then
     return nil
@@ -244,7 +248,8 @@ end
 function M.confirm()
   if phase == "select" and session then
     local okurigana = render_for_mode(session.okuri_kana or "", session.source_mode)
-    M.confirm_text((session:current_candidate() or "") .. okurigana)
+    local candidate = session:current_candidate()
+    M.confirm_text((candidate and candidate.word or "") .. okurigana)
   elseif phase == "midashi" and session then
     -- <CR> は常にひらがな確定。session.reading は元々ひらがなの内部表現
     -- なので、そのまま使えばよい（source_mode に関係なく変換しない）。

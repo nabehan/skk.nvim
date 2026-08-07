@@ -37,6 +37,24 @@ package.loaded["skk.henkan.preedit"] = {
   anchor_position = function()
     return 1, 0, 0 -- bufnr=1, row=0, col=0 の固定値
   end,
+  anchor_win = function()
+    return 1000 -- 固定のダミー winid
+  end,
+}
+
+-- --- 偽の candidate_window（呼び出し履歴を記録するだけ） ---
+-- 実物（lua/skk/henkan/candidate_window.lua）は nvim_open_win 等の
+-- 本物の vim.api に依存するため、ここでは state.lua が「候補一覧の
+-- 表示/非表示をいつ・どんな引数で呼んだか」だけを検証できるようにする。
+local candidate_window_calls = {}
+package.loaded["skk.henkan.candidate_window"] = {
+  HOME_ROW_KEYS = { "a", "s", "d", "f", "j", "k", "l" },
+  show = function(anchor_win, row, col, candidates)
+    table.insert(candidate_window_calls, { "show", anchor_win, row, col, candidates })
+  end,
+  hide = function()
+    table.insert(candidate_window_calls, { "hide" })
+  end,
 }
 
 -- --- vim.* の最小限のダミー実装 ---
@@ -59,10 +77,12 @@ local parser = require("skk.dict.jisyo_parser")
 
 local function reset()
   preedit_calls = {}
+  candidate_window_calls = {}
   buf_set_text_calls = {}
   if state.is_active() then
     state.cancel()
     preedit_calls = {} -- cancel 自体の呼び出し履歴は捨てる
+    candidate_window_calls = {}
   end
 end
 
@@ -185,41 +205,77 @@ describe("state: 辞書検索と▼遷移", function()
     assert.are.equal("select", state.get_phase())
   end)
 
-  it("▼状態でスペースは次候補へ進む", function()
+  it(
+    "候補一覧ウィンドウには、アノテーション付きの候補オブジェクトがそのまま渡る",
+    function()
+      dict.set_dict(parser.parse("かんじ /漢字;人名用/幹事/"))
+      state.start_midashi("hira", "k")
+      for ch in ("anji"):gmatch(".") do
+        state.input(ch)
+      end
+      state.space()
+      local last_show = candidate_window_calls[#candidate_window_calls]
+      assert.are.equal("show", last_show[1])
+      local page = last_show[5]
+      assert.are.equal("漢字", page[1].word)
+      assert.are.equal("人名用", page[1].annotation)
+      assert.are.equal("幹事", page[2].word)
+      assert.is_nil(page[2].annotation)
+    end
+  )
+
+  it(
+    "▼状態で s キー（ホームポジション2番目）を押すと2番目の候補が選ばれ確定する",
+    function()
+      state.start_midashi("hira", "k")
+      for ch in ("anji"):gmatch(".") do
+        state.input(ch)
+      end
+      state.space() -- 検索 -> ▼、候補1 "漢字"、候補一覧は a:漢字 s:幹事 d:監事
+      local selected = state.select_by_key("s") -- 2番目の候補「幹事」
+      assert.are.equal("幹事", selected.word)
+      state.confirm()
+      assert.are.equal("幹事", last_inserted_text())
+    end
+  )
+
+  it("select_by_key は、その位置に候補が無ければ nil を返し、選択状態を変えない", function()
     state.start_midashi("hira", "k")
     for ch in ("anji"):gmatch(".") do
       state.input(ch)
     end
-    state.space() -- 検索 -> ▼、候補1 "漢字"
-    state.next_candidate() -- 候補2 "幹事"
+    state.space() -- 候補は3件（漢字/幹事/監事）しかない
+    local selected = state.select_by_key("j") -- 5番目、候補なし
+    assert.is_nil(selected)
     state.confirm()
-    assert.are.equal("幹事", last_inserted_text())
+    assert.are.equal("漢字", last_inserted_text()) -- 先頭候補のまま
   end)
 
-  it("x で前候補へ戻る", function()
-    state.start_midashi("hira", "k")
-    for ch in ("anji"):gmatch(".") do
-      state.input(ch)
+  it(
+    "候補が7件を超えるとページが分かれ、<SPC>で次ページ・xで前ページに切り替わる",
+    function()
+      dict.set_dict(parser.parse("かんじ /1/2/3/4/5/6/7/8/9/"))
+      state.start_midashi("hira", "k")
+      for ch in ("anji"):gmatch(".") do
+        state.input(ch)
+      end
+      state.space() -- 1ページ目: 1〜7
+      state.space() -- <SPC> は select 状態では次ページ。2ページ目: 8,9
+      state.confirm()
+      assert.are.equal("8", last_inserted_text())
     end
-    state.space()
-    state.next_candidate() -- "幹事"
-    state.next_candidate() -- "監事"
-    state.prev_candidate() -- "幹事" に戻る
-    state.confirm()
-    assert.are.equal("幹事", last_inserted_text())
-  end)
+  )
 
-  it("候補送りは循環する", function()
+  it("前ページ（x）は先頭ページの前で末尾ページに循環する", function()
+    dict.set_dict(parser.parse("かんじ /1/2/3/4/5/6/7/8/9/"))
     state.start_midashi("hira", "k")
     for ch in ("anji"):gmatch(".") do
       state.input(ch)
     end
-    state.space() -- "漢字"
-    state.next_candidate() -- "幹事"
-    state.next_candidate() -- "監事"
-    state.next_candidate() -- 先頭に戻って "漢字"
+    state.space() -- 1ページ目
+    state.prev_page() -- 先頭ページの前 -> 末尾ページ（8,9）に循環
     state.confirm()
-    assert.are.equal("漢字", last_inserted_text())
+    assert.are.equal("8", last_inserted_text())
   end)
 end)
 

@@ -31,8 +31,8 @@ describe("file_source.load (utf-8, iconv を経由しない恒等変換パス)",
     os.remove(path)
 
     assert.is_nil(err)
-    assert.are.equal("漢字", dict.okuri_nasi["かんじ"][1])
-    assert.are.equal("動", dict.okuri_ari["うごk"][1])
+    assert.are.equal("漢字", dict.okuri_nasi["かんじ"][1].word)
+    assert.are.equal("動", dict.okuri_ari["うごk"][1].word)
   end)
 
   it("存在しないファイルはエラーを返す", function()

@@ -28,8 +28,10 @@ local Session = {}
 Session.__index = Session
 
 --- 候補一覧ウィンドウ1ページあたりの候補数。ホームポジション
---- （a s d f j k l ;）の8キーに対応する。
-Session.PAGE_SIZE = 8
+--- （a s d f j k l）の7キーに対応する。
+--- 【注意】`;` は Sticky-shift のトリガーキーと衝突するため、
+--- ホームポジションの選択キーには含めない（8キーではなく7キー）。
+Session.PAGE_SIZE = 7
 
 ---@param source_mode "hira"|"kata"
 ---@return SkkHenkanSession
@@ -172,7 +174,7 @@ function Session:page_candidates()
   return out
 end
 
---- 次の8候補（次ページ）へ切り替える（末尾ページの次は先頭ページに循環する）。
+--- 次のページ（次の7候補）へ切り替える（末尾ページの次は先頭ページに循環する）。
 --- 選択状態はそのページの先頭候補になる。
 function Session:next_page()
   local count = self:page_count()
@@ -183,7 +185,7 @@ function Session:next_page()
   self.index = self.page * Session.PAGE_SIZE + 1
 end
 
---- 前の8候補（前ページ）へ戻す（先頭ページの前は末尾ページに循環する）。
+--- 前のページ（前の7候補）へ戻す（先頭ページの前は末尾ページに循環する）。
 --- 選択状態はそのページの先頭候補になる。
 function Session:prev_page()
   local count = self:page_count()
@@ -194,9 +196,9 @@ function Session:prev_page()
   self.index = self.page * Session.PAGE_SIZE + 1
 end
 
---- 現在のページ内で、ホームポジションキーの位置（1〜8）を指定して
+--- 現在のページ内で、ホームポジションキーの位置（1〜7）を指定して
 --- 候補を選択状態にする。その位置に候補が無ければ何もせず nil を返す。
----@param offset integer 1〜8（a=1, s=2, d=3, f=4, j=5, k=6, l=7, ;=8）
+---@param offset integer 1〜7（a=1, s=2, d=3, f=4, j=5, k=6, l=7）
 ---@return string|nil selected_candidate
 function Session:select_on_page(offset)
   local idx = self.page * Session.PAGE_SIZE + offset

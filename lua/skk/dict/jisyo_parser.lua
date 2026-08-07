@@ -18,24 +18,34 @@
 
 local M = {}
 
---- 候補文字列からアノテーション（";" 以降）を取り除く。
+---@class SkkDictCandidate
+---@field word string 変換候補本体
+---@field annotation string|nil 注釈（無ければ nil）。候補一覧ウィンドウでの参考表示用。
+
+--- 候補文字列を本体とアノテーション（";" 以降）に分割する。
 ---@param cand string
----@return string
-local function strip_annotation(cand)
+---@return string word
+---@return string|nil annotation
+local function split_annotation(cand)
   local semi = cand:find(";", 1, true)
   if semi then
-    return cand:sub(1, semi - 1)
+    local annotation = cand:sub(semi + 1)
+    if annotation == "" then
+      annotation = nil
+    end
+    return cand:sub(1, semi - 1), annotation
   end
-  return cand
+  return cand, nil
 end
 
 --- 1行をパースする。
---- 例: "かんじ /漢字/幹事/" -> reading="かんじ", candidates={"漢字","幹事"}
---- 例: "うごk /動/"         -> reading="うごk", candidates={"動"}
+--- 例: "かんじ /漢字/幹事/"       -> reading="かんじ", candidates={{word="漢字"},{word="幹事"}}
+--- 例: "かんじ /漢字;木の意/"     -> candidates={{word="漢字", annotation="木の意"}}
+--- 例: "うごk /動/"               -> reading="うごk", candidates={{word="動"}}
 --- コメント行・不正な行（"/" で始まらない候補部等）は nil, nil を返す。
 ---@param line string
 ---@return string|nil reading
----@return string[]|nil candidates
+---@return SkkDictCandidate[]|nil candidates
 local function parse_line(line)
   if line == "" or line:sub(1, 2) == ";;" then
     return nil, nil
@@ -55,9 +65,9 @@ local function parse_line(line)
 
   local candidates = {}
   for cand in rest:gmatch("/([^/]+)") do
-    cand = strip_annotation(cand)
-    if cand ~= "" then
-      table.insert(candidates, cand)
+    local word, annotation = split_annotation(cand)
+    if word ~= "" then
+      table.insert(candidates, { word = word, annotation = annotation })
     end
   end
 
@@ -70,10 +80,12 @@ end
 
 M._parse_line = parse_line -- テストから直接検証できるように公開しておく
 
---- 同じ reading の候補リストへ、重複を避けつつ追加でマージする。
----@param bucket table<string, string[]>
+--- 同じ reading の候補リストへ、重複（同じ word）を避けつつ追加でマージする。
+--- 既に同じ word がある場合、後から来たアノテーションでは上書きしない
+--- （最初に見つかった辞書エントリのアノテーションを優先する）。
+---@param bucket table<string, SkkDictCandidate[]>
 ---@param reading string
----@param candidates string[]
+---@param candidates SkkDictCandidate[]
 local function merge_into(bucket, reading, candidates)
   local existing = bucket[reading]
   if not existing then
@@ -83,19 +95,19 @@ local function merge_into(bucket, reading, candidates)
 
   local seen = {}
   for _, c in ipairs(existing) do
-    seen[c] = true
+    seen[c.word] = true
   end
   for _, c in ipairs(candidates) do
-    if not seen[c] then
+    if not seen[c.word] then
       table.insert(existing, c)
-      seen[c] = true
+      seen[c.word] = true
     end
   end
 end
 
 --- SKK辞書のテキスト全体（UTF-8の複数行文字列）をパースする。
 ---@param text string
----@return { okuri_ari: table<string, string[]>, okuri_nasi: table<string, string[]> }
+---@return { okuri_ari: table<string, SkkDictCandidate[]>, okuri_nasi: table<string, SkkDictCandidate[]> }
 function M.parse(text)
   local dict = { okuri_ari = {}, okuri_nasi = {} }
   local section = "okuri_nasi" -- セクションマーカーが無い辞書ファイルもあるためデフォルトを用意
