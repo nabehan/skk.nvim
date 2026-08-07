@@ -2,3 +2,4 @@
 *.swp
 /.tests/
 /.luarc.json
+test.log
