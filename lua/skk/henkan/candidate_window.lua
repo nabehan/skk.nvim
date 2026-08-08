@@ -97,7 +97,7 @@ M._format_lines = format_lines -- テストから直接検証できるように�
 ---@param page_count integer 全ページ数
 ---@return string
 local function page_indicator_line(page, page_count)
-  return string.format("%d/%d", page, page_count)
+  return string.format("[%d/%d]", page, page_count)
 end
 
 M._page_indicator_line = page_indicator_line -- テストから直接検証できるように公開しておく
