@@ -671,3 +671,70 @@ describe("state: 候補一覧ウィンドウの表示タイミング（candidate
     assert.are.equal("漢字", show[2])
   end)
 end)
+
+describe("state: focus_next/focus_prev（<C-n>/<C-p> 相当）", function()
+  before_each(function()
+    reset()
+    state.setup({ candidate_window_threshold = 1 }) -- ウィンドウは最初から表示されている状態にする
+    dict.set_dict(parser.parse("かんじ /1/2/3/4/5/6/7/8/9/")) -- 9件 -> 2ページ
+  end)
+
+  local function start_kanji_henkan()
+    state.start_midashi("hira", "k")
+    for ch in ("anji"):gmatch(".") do
+      state.input(ch)
+    end
+  end
+
+  it("focus_next は次の1候補にフォーカスを移し、常にウィンドウを表示する", function()
+    start_kanji_henkan()
+    state.space() -- ▼開始、候補1「1」、ウィンドウ表示
+    state.focus_next() -- 候補2「2」
+    local show = preedit_calls[#preedit_calls]
+    assert.are.equal("2", show[2])
+    local win_call = candidate_window_calls[#candidate_window_calls]
+    assert.are.equal("show", win_call[1])
+    assert.are.equal(2, win_call[8]) -- selected_offset（1ページ目の2番目）
+  end)
+
+  it(
+    "ページ末尾（l: 7番目）で focus_next すると、次ページの先頭（a）にフォーカスする",
+    function()
+      start_kanji_henkan()
+      state.space() -- 候補1「1」
+      for _ = 1, 6 do
+        state.focus_next() -- 候補2..7「2」..「7」
+      end
+      -- ここで候補7「7」（1ページ目の末尾 = l）にいるはず
+      assert.are.equal("7", preedit_calls[#preedit_calls][2])
+
+      state.focus_next() -- 折り返して2ページ目の先頭（候補8「8」）へ
+      local show = preedit_calls[#preedit_calls]
+      assert.are.equal("8", show[2])
+      local win_call = candidate_window_calls[#candidate_window_calls]
+      assert.are.equal(2, win_call[6]) -- 2ページ目
+      assert.are.equal(1, win_call[8]) -- ページ内の1番目（a）
+    end
+  )
+
+  it("先頭候補（a）で focus_prev すると、前ページの末尾候補にフォーカスする", function()
+    start_kanji_henkan()
+    state.space() -- 候補1「1」（1ページ目の先頭 = a）
+    state.focus_prev() -- 折り返して、全候補中の最後（候補9「9」、2ページ目の2番目）へ
+    local show = preedit_calls[#preedit_calls]
+    assert.are.equal("9", show[2])
+    local win_call = candidate_window_calls[#candidate_window_calls]
+    assert.are.equal(2, win_call[6]) -- 2ページ目
+    assert.are.equal(2, win_call[7]) -- 全2ページ
+    assert.are.equal(2, win_call[8]) -- 2ページ目の2番目（s の位置。2ページ目は候補2件しか無いため）
+  end)
+
+  it("<CR>相当（confirm）で、フォーカス中の候補が確定する", function()
+    start_kanji_henkan()
+    state.space()
+    state.focus_next()
+    state.focus_next()
+    state.confirm()
+    assert.are.equal("3", last_inserted_text())
+  end)
+end)

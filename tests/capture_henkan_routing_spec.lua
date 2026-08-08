@@ -31,6 +31,8 @@ local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
   local CR = string.char(13)
   local CTRL_G = string.char(7)
   local CTRL_Q = string.char(17)
+  local CTRL_N = string.char(14)
+  local CTRL_P = string.char(16)
 
   if key == CR then
     henkan_state.confirm()
@@ -54,6 +56,14 @@ local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
   if phase == "select" then
     if key == "x" then
       henkan_state.prev_page()
+      return false
+    end
+    if key == CTRL_N then
+      henkan_state.focus_next()
+      return false
+    end
+    if key == CTRL_P then
+      henkan_state.focus_prev()
       return false
     end
     if henkan_state.select_by_key(key) then
@@ -185,6 +195,8 @@ local function make_fake_state()
     "convert_and_confirm_kana",
     "next_page",
     "prev_page",
+    "focus_next",
+    "focus_prev",
     "select_by_key",
   }) do
     fake[name] = function(...)
@@ -452,6 +464,22 @@ describe("capture henkan routing: ▼ (select) フェーズ", function()
     fake._phase = "select"
     route(fake, is_target_key, "x")
     assert.are.equal("prev_page", calls[1][1])
+  end)
+
+  it("<C-n> は focus_next を呼ぶ", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "select"
+    route(fake, is_target_key, string.char(14))
+    assert.are.equal("focus_next", calls[1][1])
+  end)
+
+  it("<C-p> は focus_prev を呼ぶ", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "select"
+    route(fake, is_target_key, string.char(16))
+    assert.are.equal("focus_prev", calls[1][1])
   end)
 
   it(
