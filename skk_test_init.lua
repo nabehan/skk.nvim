@@ -2,9 +2,24 @@
 vim.opt.runtimepath:append(vim.fn.getcwd())
 
 require("skk").setup({
-  enter_key = "<C-j>", -- 半角英数/全角英数 -> ひらがな。henkan 中は <CR> 相当（確定）。省略時 "<C-j>"
+  enter_key = "<C-j>",
+  -- 半角英数/全角英数 -> ひらがな。henkan 中は <CR> 相当（確定）。省略時 "<C-j>"
+
+  sticky_shift_enabled = true,
+  -- Sticky-shift の有効/無効。省略時 true
+
+  sticky_shift_key = ";",
+  -- Sticky-shift のトリガーキー。省略時 ";"（sticky_shift_enabled=false なら無視される）
+
+  egg_like_newline = true,
+  -- true: ▼状態での<CR>は確定のみ（改行しない、skk.nvimのデフォルト）
+  -- false: 確定に加えて改行も挿入する（SKK本来の動作）
+
   candidate_window = {
-    border = "rounded", -- "rounded"/"single"/"double"/"none"/ 省略時 "rounded"
+    border = "rounded",
+    -- "rounded"/"single"/"double"/"none"/自前の文字配列。省略時 "rounded"
+    annotation = true,
+    -- 候補一覧に辞書の注釈（;注釈）を表示するか。省略時 true
   },
 })
 
