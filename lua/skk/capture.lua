@@ -90,6 +90,8 @@ local BS_TERMCODE = nil
 local CR = string.char(13) -- <CR> (Enter)
 local CTRL_G = string.char(7) -- <C-g>
 local CTRL_Q = string.char(17) -- <C-q>（abbrevモード専用: 全角変換して確定）
+local CTRL_N = string.char(14) -- <C-n>（▼状態専用: 候補一覧ウィンドウ内でフォーカスを次の候補へ）
+local CTRL_P = string.char(16) -- <C-p>（▼状態専用: フォーカスを前の候補へ）
 
 -- ひらがな/カタカナモードで、確定したかなをどう表示するか。
 ---@type table<SkkMode, fun(s: string): string>
@@ -247,6 +249,16 @@ local function handle_henkan_key(key)
   if phase == "select" then
     if key == "x" then
       henkan_state.prev_page()
+      return false
+    end
+    if key == CTRL_N then
+      -- 候補一覧ウィンドウ内でフォーカスを次の候補へ（ページ境界は折り返す）。
+      -- <SPC> のしきい値設定に関わらず、常に候補一覧ウィンドウを表示する。
+      henkan_state.focus_next()
+      return false
+    end
+    if key == CTRL_P then
+      henkan_state.focus_prev()
       return false
     end
     -- ホームポジションキー（a s d f j k l）は、現在ページの候補一覧

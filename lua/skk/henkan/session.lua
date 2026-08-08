@@ -24,6 +24,8 @@ local kana_util = require("skk.kana_util")
 ---@field page integer 候補一覧ウィンドウの現在ページ（0-indexed）
 ---@field search_key string|nil 直近の辞書検索に使ったキー（学習の記録に使う）
 ---@field search_has_okuri boolean|nil 直近の辞書検索が送りあり検索だったか
+---@field space_count integer <SPC>を押した回数（▼開始直後の1回目を含む）。
+---  候補ウィンドウをいつ表示するかの判定に使う（state.lua 参照）。
 ---@field reading_input SkkContext 読み入力用の変換エンジン状態（内部専用）
 ---@field okuri_input SkkContext 送り仮名入力用の変換エンジン状態（内部専用）
 local Session = {}
@@ -48,6 +50,7 @@ function Session.new(source_mode)
     page = 0,
     search_key = nil,
     search_has_okuri = nil,
+    space_count = 0,
     reading_input = Context.new(),
     okuri_input = Context.new(),
   }, Session)
@@ -229,6 +232,27 @@ function Session:select_on_page(offset)
   end
   self.index = idx
   return self.candidates[idx]
+end
+
+--- 候補一覧ウィンドウを表示する前の「1件ずつ送る」段階で使う。
+--- 次の1候補へ進める（末尾の次は先頭に循環する）。page も現在の index に
+--- 同期しておく（後でウィンドウを表示する際に、この時点の候補を含む
+--- ページがそのまま表示されるようにするため）。
+function Session:advance_single()
+  if #self.candidates == 0 then
+    return
+  end
+  self.index = (self.index % #self.candidates) + 1
+  self.page = math.floor((self.index - 1) / Session.PAGE_SIZE)
+end
+
+--- Session:advance_single() の逆方向（先頭の前は末尾に循環する）。
+function Session:retreat_single()
+  if #self.candidates == 0 then
+    return
+  end
+  self.index = ((self.index - 2) % #self.candidates) + 1
+  self.page = math.floor((self.index - 1) / Session.PAGE_SIZE)
 end
 
 return Session

@@ -111,3 +111,37 @@ describe("candidate_window.setup", function()
     candidate_window.setup({ page_indicator = true }) -- 他のテストに影響しないよう元に戻す
   end)
 end)
+
+describe("candidate_window の選択中候補ハイライト（selected_offset）", function()
+  before_each(function()
+    candidate_window.hide()
+  end)
+
+  local function make_candidates()
+    local out = {}
+    for _, w in ipairs({ "菌", "金", "近", "筋", "禁", "均", "衿" }) do
+      table.insert(out, { word = w })
+    end
+    return out
+  end
+
+  it("selected_offset を指定すると、その行がハイライトされる（3番目 = d:近）", function()
+    candidate_window.show(0, 0, 0, make_candidates(), 1, 1, 3)
+    assert.are.equal(2, candidate_window._highlighted_line()) -- 0-indexed の3行目 = "d: 近"
+  end)
+
+  it("selected_offset=nil ならハイライトしない", function()
+    candidate_window.show(0, 0, 0, make_candidates(), 1, 1, nil)
+    assert.is_nil(candidate_window._highlighted_line())
+  end)
+
+  it(
+    "再表示するたびにハイライトが更新される（前回のハイライトが残らない）",
+    function()
+      candidate_window.show(0, 0, 0, make_candidates(), 1, 1, 1)
+      assert.are.equal(0, candidate_window._highlighted_line())
+      candidate_window.show(0, 0, 0, make_candidates(), 1, 1, 5)
+      assert.are.equal(4, candidate_window._highlighted_line())
+    end
+  )
+end)

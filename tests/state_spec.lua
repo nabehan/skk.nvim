@@ -49,8 +49,11 @@ package.loaded["skk.henkan.preedit"] = {
 local candidate_window_calls = {}
 package.loaded["skk.henkan.candidate_window"] = {
   HOME_ROW_KEYS = { "a", "s", "d", "f", "j", "k", "l" },
-  show = function(anchor_win, row, col, candidates, page, page_count)
-    table.insert(candidate_window_calls, { "show", anchor_win, row, col, candidates, page, page_count })
+  show = function(anchor_win, row, col, candidates, page, page_count, selected_offset)
+    table.insert(
+      candidate_window_calls,
+      { "show", anchor_win, row, col, candidates, page, page_count, selected_offset }
+    )
   end,
   hide = function()
     table.insert(candidate_window_calls, { "hide" })
@@ -79,6 +82,10 @@ local function reset()
   preedit_calls = {}
   candidate_window_calls = {}
   buf_set_text_calls = {}
+  -- 既存のテスト群は「▼開始と同時にウィンドウを表示する」旧来の挙動
+  -- （= threshold 1）を前提に書かれているので固定しておく。
+  -- threshold 自体の挙動は別の describe ブロックで検証する。
+  state.setup({ candidate_window_threshold = 1 })
   if state.is_active() then
     state.cancel()
     preedit_calls = {} -- cancel 自体の呼び出し履歴は捨てる
@@ -576,5 +583,91 @@ describe('state: abbrev モード（"/" 開始、ASCII見出し）', function()
     end
     state.space()
     assert.are.equal("nosuchword", last_inserted_text())
+  end)
+end)
+
+describe("state: 候補一覧ウィンドウの表示タイミング（candidate_window_threshold）", function()
+  before_each(function()
+    reset()
+    dict.set_dict(parser.parse("かんじ /漢字/幹事/監事/幹事長/"))
+  end)
+
+  local function start_kanji_henkan()
+    state.start_midashi("hira", "k")
+    for ch in ("anji"):gmatch(".") do
+      state.input(ch)
+    end
+  end
+
+  it("threshold=1（デフォルトの前の挙動）: 最初の<SPC>で即ウィンドウ表示", function()
+    state.setup({ candidate_window_threshold = 1 })
+    start_kanji_henkan()
+    state.space() -- 1回目
+    assert.are.equal("show", candidate_window_calls[#candidate_window_calls][1])
+  end)
+
+  it(
+    "threshold=3: 1・2回目はインラインのみ、3回目でウィンドウ表示（ユーザー提示の例と同じ）",
+    function()
+      state.setup({ candidate_window_threshold = 3 })
+      start_kanji_henkan()
+
+      state.space() -- 1回目: インラインのみ、候補1「漢字」
+      assert.are.equal(0, #candidate_window_calls)
+      local show1 = preedit_calls[#preedit_calls]
+      assert.are.equal("show_henkan", show1[1])
+      assert.are.equal("漢字", show1[2])
+
+      state.space() -- 2回目: インラインのみ、候補2「幹事」
+      assert.are.equal(0, #candidate_window_calls)
+      local show2 = preedit_calls[#preedit_calls]
+      assert.are.equal("幹事", show2[2])
+
+      state.space() -- 3回目: 候補3「監事」に進み、ここでウィンドウ表示
+      assert.are.equal(1, #candidate_window_calls)
+      local win_call = candidate_window_calls[#candidate_window_calls]
+      assert.are.equal("show", win_call[1])
+      local show3 = preedit_calls[#preedit_calls]
+      assert.are.equal("監事", show3[2])
+      -- 回帰テスト: インラインで表示中の候補（3番目「監事」）と、候補一覧
+      -- ウィンドウ内でハイライトされる位置（3番目 = d）が一致すること。
+      -- 以前はウィンドウが必ずページ先頭（a）を選択中として扱っていたため、
+      -- 単独送りの途中でウィンドウが現れると、インライン表示（監事）と
+      -- ウィンドウの見た目上の「選択中」（先頭の漢字）がズレていた。
+      assert.are.equal(3, win_call[8]) -- selected_offset
+
+      -- 確定すると、その時点でインライン表示していた候補（監事）が挿入される
+      state.confirm()
+      assert.are.equal("監事", last_inserted_text())
+    end
+  )
+
+  it("threshold到達後の<SPC>は、通常どおりページ送り（7候補ずつ）になる", function()
+    dict.set_dict(parser.parse("かんじ /1/2/3/4/5/6/7/8/9/"))
+    state.setup({ candidate_window_threshold = 2 })
+    start_kanji_henkan()
+
+    state.space() -- 1回目: インラインのみ、候補1「1」
+    state.space() -- 2回目: 候補2「2」に進み、ウィンドウ表示（まだ1ページ目の中）
+    local show2 = candidate_window_calls[#candidate_window_calls]
+    assert.are.equal(1, show2[6]) -- page（1-indexed） = 1ページ目のまま
+
+    state.space() -- 3回目: 閾値到達後なので、ここからページ送り(+7)
+    local show3 = candidate_window_calls[#candidate_window_calls]
+    assert.are.equal(2, show3[6]) -- 2ページ目へ
+    state.confirm()
+    assert.are.equal("8", last_inserted_text())
+  end)
+
+  it("ウィンドウ表示前の x は、1件ずつ戻すだけでウィンドウは表示しない", function()
+    state.setup({ candidate_window_threshold = 3 })
+    start_kanji_henkan()
+
+    state.space() -- 候補1「漢字」
+    state.space() -- 候補2「幹事」
+    state.prev_page() -- x: 候補1「漢字」に戻る（ウィンドウはまだ出さない）
+    assert.are.equal(0, #candidate_window_calls)
+    local show = preedit_calls[#preedit_calls]
+    assert.are.equal("漢字", show[2])
   end)
 end)

@@ -26,6 +26,11 @@ vim.api.nvim_buf_is_valid = function()
   return true
 end
 vim.api.nvim_buf_set_lines = function() end
+vim.api.nvim_create_namespace = function()
+  return 1
+end
+vim.api.nvim_buf_clear_namespace = function() end
+vim.api.nvim_buf_set_extmark = function() end
 vim.api.nvim_win_is_valid = function(id)
   return open_wins[id] == true
 end

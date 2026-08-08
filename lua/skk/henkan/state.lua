@@ -31,6 +31,22 @@ local phase = "idle"
 ---@type SkkHenkanSession|nil
 local session = nil
 
+--- 候補一覧ウィンドウをいつ表示するかの設定。lua/skk/init.lua の
+--- M.setup({ candidate_window = { threshold = ... } }) から差し込む。
+--- <SPC> を押した回数がこの値に達した時点で初めてウィンドウを表示する
+--- （それまではインラインの ▼ プレビューで1件ずつ候補を送るだけ）。
+--- 個人辞書の学習で先頭候補が当たりやすくなったことを踏まえた仕様。
+---@type { candidate_window_threshold: integer }
+local config = { candidate_window_threshold = 2 }
+
+---@param opts { candidate_window_threshold: integer? }|nil
+function M.setup(opts)
+  opts = opts or {}
+  if opts.candidate_window_threshold ~= nil then
+    config.candidate_window_threshold = opts.candidate_window_threshold
+  end
+end
+
 ---@return boolean
 function M.is_active()
   return phase ~= "idle"
@@ -190,11 +206,35 @@ local function show_select_ui()
   local anchor_win = preedit.anchor_win()
   local _, row, col = preedit.anchor_position()
   if anchor_win and row ~= nil and col ~= nil then
-    candidate_window.show(anchor_win, row, col, session:page_candidates(), session.page + 1, session:page_count())
+    -- 現在選択中の候補が、表示するページの中で何番目（ホームポジションの
+    -- どのキーの位置）に当たるかを求め、候補一覧ウィンドウ側でも同じ
+    -- 候補をハイライトできるようにする（インライン ▼ 表示との整合性のため）。
+    local selected_offset = session.index - session.page * Session.PAGE_SIZE
+    candidate_window.show(
+      anchor_win,
+      row,
+      col,
+      session:page_candidates(),
+      session.page + 1,
+      session:page_count(),
+      selected_offset
+    )
   end
 end
 
---- スペース。▽/abbrev 状態なら辞書検索して▼へ、▼状態なら次ページ（次の7候補）へ。
+--- 候補一覧ウィンドウを表示する前段階（<SPC> を押した回数が
+--- config.candidate_window_threshold に達するまで）の表示更新。
+--- inline の ▼候補 表示だけを更新し、ウィンドウは一切触らない。
+local function show_inline_preview_only()
+  local candidate = session:current_candidate()
+  preedit.show_henkan(
+    candidate and candidate.word or nil,
+    render_for_mode(session.okuri_kana or "", session.source_mode)
+  )
+end
+
+--- スペース。▽/abbrev 状態なら辞書検索して▼へ、▼状態なら次の1候補
+--- （ウィンドウ表示前）または次ページ（ウィンドウ表示後）へ。
 function M.space()
   if phase == "midashi" or phase == "abbrev" then
     M.search()
@@ -208,6 +248,8 @@ end
 --- 送り仮名の有無を判定する）。
 --- abbrev状態（phase=="abbrev"）: 見出しの ASCII 文字列そのものを検索キーにする
 --- （送りありという概念が無いので常に has_okuri=false）。
+--- この <SPC> が1回目の打鍵になる。config.candidate_window_threshold が
+--- 1 なら（デフォルトの前の挙動と同じく）この時点で候補ウィンドウも表示する。
 function M.search()
   if (phase ~= "midashi" and phase ~= "abbrev") or not session or session.reading == "" then
     return
@@ -224,6 +266,7 @@ function M.search()
 
   local candidates = dict.lookup(key, has_okuri)
   session:set_candidates(candidates)
+  session.space_count = 1
   phase = "select"
 
   if #candidates == 0 then
@@ -231,7 +274,11 @@ function M.search()
     return
   end
 
-  show_select_ui()
+  if session.space_count >= config.candidate_window_threshold then
+    show_select_ui()
+  else
+    show_inline_preview_only()
+  end
 end
 
 --- 候補ゼロ件のときのフォールバック。
@@ -248,21 +295,74 @@ function M._fallback_no_candidates()
   )
 end
 
---- 次ページ（次の8候補、▼状態のみ）。<SPC> に割り当てる。
+--- 次の候補（▼状態のみ）。<SPC> に割り当てる。
+--- <SPC> を押した回数（session.space_count）が config.candidate_window_threshold
+--- に達するまでは、1件ずつ候補を進めてインライン表示するだけで候補一覧
+--- ウィンドウは出さない。閾値に達したその打鍵で（1件進めたうえで）
+--- 初めてウィンドウを表示する。それ以降の <SPC> は通常どおりページ送り
+--- （7候補ずつ）になる。
 function M.next_page()
   if phase ~= "select" or not session then
     return
   end
+
+  session.space_count = (session.space_count or 0) + 1
+
+  if session.space_count < config.candidate_window_threshold then
+    session:advance_single()
+    show_inline_preview_only()
+    return
+  end
+
+  if session.space_count == config.candidate_window_threshold then
+    session:advance_single()
+    show_select_ui()
+    return
+  end
+
   session:next_page()
   show_select_ui()
 end
 
---- 前ページ（前の8候補、▼状態のみ）。x キーに割り当てる。
+--- 前の候補・前ページ（x キー、▼状態のみ）。M.next_page() と対称的に、
+--- 候補一覧ウィンドウがまだ表示されていない段階では1件ずつ戻すだけに
+--- とどめ、ウィンドウは表示しない（<SPC> の打鍵回数はここでは消費しない。
+--- 「戻る」操作なので、ウィンドウ表示までの前進をカウントし直す必要は無い）。
 function M.prev_page()
   if phase ~= "select" or not session then
     return
   end
+
+  if (session.space_count or 0) < config.candidate_window_threshold then
+    session:retreat_single()
+    show_inline_preview_only()
+    return
+  end
+
   session:prev_page()
+  show_select_ui()
+end
+
+--- <C-n> 相当。候補一覧ウィンドウの中で、フォーカスを次の1候補へ移す
+--- （末尾候補の次は次ページの先頭へ折り返す。Session:advance_single() が
+--- ページ境界の折り返しも含めて面倒を見る）。<SPC> のしきい値設定とは
+--- 独立した、明示的に一覧をブラウズする操作なので、呼ばれた時点で必ず
+--- 候補一覧ウィンドウを表示する。
+function M.focus_next()
+  if phase ~= "select" or not session then
+    return
+  end
+  session:advance_single()
+  show_select_ui()
+end
+
+--- <C-p> 相当。M.focus_next() の逆方向（先頭候補での <C-p> は前ページの
+--- 末尾候補へ折り返す）。
+function M.focus_prev()
+  if phase ~= "select" or not session then
+    return
+  end
+  session:retreat_single()
   show_select_ui()
 end
 

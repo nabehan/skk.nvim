@@ -28,6 +28,8 @@ M.HOME_ROW_KEYS = { "a", "s", "d", "f", "j", "k", "l" }
 local win = nil
 ---@type integer|nil
 local buf = nil
+---@type integer|nil
+local ns = nil
 --- 現在の変換セッション中に一度決めた配置（"NW"=下, "SW"=上）を覚えて
 --- おき、ウィンドウが開いている間は使い回す（sticky）。<SPC> でページを
 --- 送って候補数が減り、本来なら下にも収まるようになった場合でも、一度
@@ -97,7 +99,7 @@ M._format_lines = format_lines -- テストから直接検証できるように�
 ---@param page_count integer 全ページ数
 ---@return string
 local function page_indicator_line(page, page_count)
-  return string.format("[%d/%d]", page, page_count)
+  return string.format("%d/%d", page, page_count)
 end
 
 M._page_indicator_line = page_indicator_line -- テストから直接検証できるように公開しておく
@@ -113,6 +115,14 @@ local function get_buf()
     vim.bo[buf].bufhidden = "wipe"
   end
   return buf
+end
+
+---@return integer
+local function get_ns()
+  if not ns then
+    ns = vim.api.nvim_create_namespace("skk_candidate_window")
+  end
+  return ns
 end
 
 --- border 設定によって、フローティングウィンドウが実際に食う「枠線の
@@ -178,13 +188,23 @@ M._compute_placement = compute_placement
 --- すぐ下（入りきらなければ上）にフローティングウィンドウで表示する。
 --- 既に表示中なら、内容とサイズだけ更新する（ウィンドウを開き直さない）。
 --- 最下行に "現在ページ/全ページ数"（例: "2/3"）のインジケーターを付ける。
+---
+--- selected_offset で指定した行（ホームポジションの位置、1〜7）を
+--- ハイライトする。候補一覧ウィンドウを表示するタイミングを遅らせる
+--- 設定（lua/skk/init.lua の candidate_window.threshold）を使うと、
+--- ウィンドウを開いた時点で選択中の候補がページの先頭（"a:"）とは
+--- 限らなくなる（1件ずつ送っている途中でウィンドウが現れるため）。
+--- インライン表示（▼候補）と齟齬が出ないよう、実際に選ばれている行を
+--- ここで明示する。
 ---@param anchor_win integer 基準となるウィンドウID
 ---@param anchor_row integer 0-indexed の行
 ---@param anchor_col integer 0-indexed の列
 ---@param candidates SkkDictCandidate[] 現在ページの候補一覧（最大7件）
 ---@param page integer 現在のページ（1-indexed）
 ---@param page_count integer 全ページ数
-function M.show(anchor_win, anchor_row, anchor_col, candidates, page, page_count)
+---@param selected_offset integer|nil 現在選択中の候補の、ページ内での位置（1〜7）。
+---  nil ならハイライトしない。
+function M.show(anchor_win, anchor_row, anchor_col, candidates, page, page_count, selected_offset)
   if #candidates == 0 then
     M.hide()
     return
@@ -196,6 +216,13 @@ function M.show(anchor_win, anchor_row, anchor_col, candidates, page, page_count
   end
   local b = get_buf()
   vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
+
+  vim.api.nvim_buf_clear_namespace(b, get_ns(), 0, -1)
+  if selected_offset and selected_offset >= 1 and selected_offset <= #candidates then
+    vim.api.nvim_buf_set_extmark(b, get_ns(), selected_offset - 1, 0, {
+      line_hl_group = "SkkHenkanCandidate",
+    })
+  end
 
   local width = 1
   for _, line in ipairs(lines) do
@@ -226,12 +253,15 @@ function M.show(anchor_win, anchor_row, anchor_col, candidates, page, page_count
     style = "minimal",
     border = config.border,
     focusable = false,
-    noautocmd = true,
   }
 
   if win and vim.api.nvim_win_is_valid(win) then
+    -- 【注意】noautocmd は nvim_open_win() 専用のオプションで、
+    -- nvim_win_set_config()（既存ウィンドウの更新）には渡せない
+    -- （渡すと "Invalid key: 'noautocmd'" エラーになる）。
     vim.api.nvim_win_set_config(win, win_config)
   else
+    win_config.noautocmd = true
     win = vim.api.nvim_open_win(b, false, win_config)
   end
 end
@@ -255,6 +285,20 @@ function M._buf_lines()
     return nil
   end
   return vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+end
+
+--- 現在ハイライトされている行番号（0-indexed）を返す（テスト用）。
+--- ハイライトが無ければ nil。
+---@return integer|nil
+function M._highlighted_line()
+  if not buf or not vim.api.nvim_buf_is_valid(buf) or not ns then
+    return nil
+  end
+  local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, {})
+  if #marks == 0 then
+    return nil
+  end
+  return marks[1][2] -- {id, row, col}
 end
 
 return M

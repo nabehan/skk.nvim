@@ -21,11 +21,15 @@ local M = {}
 ---  sticky_shift_enabled=false のときは無視される。
 ---@field egg_like_newline boolean? true: ▼状態での <CR> は確定のみ行い、改行は挿入しない
 ---  （skk.nvimのデフォルト）。false: 確定に加えて改行も挿入する（SKK本来の動作）。デフォルト true。
----@field candidate_window { border: string|string[], annotation: boolean, page_indicator: boolean }? 候補一覧ウィンドウの見た目。
+---@field candidate_window { border: string|string[], annotation: boolean, page_indicator: boolean, threshold: integer }? 候補一覧ウィンドウの見た目・表示タイミング。
 ---  border は nvim_open_win() の "border" と同じ形式（"rounded"/"single"/"double"/
 ---  "none"/自前の文字配列 等）。デフォルト "rounded"。
 ---  annotation: 辞書の注釈（";注釈"）を候補一覧に表示するか。デフォルト true。
 ---  page_indicator: 最下行に "現在ページ/全ページ数"（例: "2/3"）を表示するか。デフォルト true。
+---  threshold: ▼開始後、<SPC> を何回打鍵した時点で候補一覧ウィンドウを表示するか。
+---  それまでは inline の ▼候補 表示で1件ずつ候補を送るだけでウィンドウは出さない
+---  （個人辞書の学習で先頭候補が当たりやすくなったことを踏まえた設定。1にすると
+---  従来通り最初の <SPC> でウィンドウも同時に表示する）。デフォルト 2。
 ---@field user_dictionary string? 個人辞書（学習結果）ファイルのパス。文字コードは常にUTF-8固定
 ---  （skkeleton の userDictionary の慣習に合わせている）。ファイルが無ければ自動的に作られる。
 ---  デフォルト "~/.local/share/skk/SKK-JISYO.user"（skkeleton と同じ慣習のパス）。
@@ -50,6 +54,9 @@ function M.setup(opts)
     egg_like_newline = opts.egg_like_newline,
   })
   candidate_window.setup(opts.candidate_window or {})
+  henkan_state.setup({
+    candidate_window_threshold = opts.candidate_window and opts.candidate_window.threshold or nil,
+  })
   dict.set_user_dict_path(user_dictionary)
 
   local function notify_mode()
