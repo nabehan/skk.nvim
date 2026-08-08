@@ -155,3 +155,37 @@ describe("jisyo_parser.parse", function()
     assert.are.equal("亜", dict.okuri_nasi["あ"][1].word)
   end)
 end)
+
+describe("jisyo_parser.serialize", function()
+  it("parse() の結果を serialize() すると、同じ内容として parse() し直せる（往復）", function()
+    local original_text = table.concat({
+      ";; okuri-ari entries.",
+      "うごk /動/",
+      ";; okuri-nasi entries.",
+      "かんじ /漢字;人名用/幹事/",
+    }, "\n")
+    local dict = parser.parse(original_text)
+    local serialized = parser.serialize(dict)
+    local roundtrip = parser.parse(serialized)
+
+    assert.are.equal("動", roundtrip.okuri_ari["うごk"][1].word)
+    assert.are.equal("漢字", roundtrip.okuri_nasi["かんじ"][1].word)
+    assert.are.equal("人名用", roundtrip.okuri_nasi["かんじ"][1].annotation)
+    assert.are.equal("幹事", roundtrip.okuri_nasi["かんじ"][2].word)
+  end)
+
+  it("okuri-ari セクションが先、okuri-nasi セクションが後に出力される", function()
+    local dict = { okuri_ari = { ["うごk"] = { { word = "動" } } }, okuri_nasi = { ["あ"] = { { word = "亜" } } } }
+    local text = parser.serialize(dict)
+    local ari_pos = text:find(";; okuri-ari entries.", 1, true)
+    local nasi_pos = text:find(";; okuri-nasi entries.", 1, true)
+    assert.is_true(ari_pos < nasi_pos)
+  end)
+
+  it("空の辞書は、セクションマーカーだけの空辞書として往復できる", function()
+    local dict = { okuri_ari = {}, okuri_nasi = {} }
+    local roundtrip = parser.parse(parser.serialize(dict))
+    assert.are.same({}, roundtrip.okuri_ari)
+    assert.are.same({}, roundtrip.okuri_nasi)
+  end)
+end)

@@ -22,6 +22,8 @@ local kana_util = require("skk.kana_util")
 ---@field candidates SkkDictCandidate[] 辞書検索結果の候補一覧（各要素は {word, annotation}）
 ---@field index integer 現在選択中の候補（1-indexed）。0 は未検索。
 ---@field page integer 候補一覧ウィンドウの現在ページ（0-indexed）
+---@field search_key string|nil 直近の辞書検索に使ったキー（学習の記録に使う）
+---@field search_has_okuri boolean|nil 直近の辞書検索が送りあり検索だったか
 ---@field reading_input SkkContext 読み入力用の変換エンジン状態（内部専用）
 ---@field okuri_input SkkContext 送り仮名入力用の変換エンジン状態（内部専用）
 local Session = {}
@@ -44,6 +46,8 @@ function Session.new(source_mode)
     candidates = {},
     index = 0,
     page = 0,
+    search_key = nil,
+    search_has_okuri = nil,
     reading_input = Context.new(),
     okuri_input = Context.new(),
   }, Session)

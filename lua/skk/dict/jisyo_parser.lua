@@ -130,4 +130,47 @@ function M.parse(text)
   return dict
 end
 
+--- M.parse() の逆演算。パース結果と同じ構造のテーブルを SKK-JISYO 形式の
+--- テキストに直列化する。個人辞書（学習結果）の保存に使う。
+--- reading は文字列としてソートしてから書き出す（Lua の pairs() は
+--- テーブルの走査順を保証しないため、保存するたびに順序が変わって
+--- 差分が無駄に大きくなるのを避ける）。
+---@param dict { okuri_ari: table<string, SkkDictCandidate[]>, okuri_nasi: table<string, SkkDictCandidate[]> }
+---@return string
+function M.serialize(dict)
+  local function section_lines(section)
+    local readings = {}
+    for reading in pairs(section) do
+      table.insert(readings, reading)
+    end
+    table.sort(readings)
+
+    local lines = {}
+    for _, reading in ipairs(readings) do
+      local parts = {}
+      for _, c in ipairs(section[reading]) do
+        if c.annotation then
+          table.insert(parts, c.word .. ";" .. c.annotation)
+        else
+          table.insert(parts, c.word)
+        end
+      end
+      table.insert(lines, reading .. " /" .. table.concat(parts, "/") .. "/")
+    end
+    return lines
+  end
+
+  local out = { ";; okuri-ari entries." }
+  for _, line in ipairs(section_lines(dict.okuri_ari)) do
+    table.insert(out, line)
+  end
+  table.insert(out, ";; okuri-nasi entries.")
+  for _, line in ipairs(section_lines(dict.okuri_nasi)) do
+    table.insert(out, line)
+  end
+  table.insert(out, "") -- 末尾改行のため
+
+  return table.concat(out, "\n")
+end
+
 return M

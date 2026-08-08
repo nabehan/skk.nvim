@@ -21,6 +21,11 @@ require("skk").setup({
     annotation = true,
     -- 候補一覧に辞書の注釈（;注釈）を表示するか。省略時 true
   },
+
+  -- 実装試験中は、個人辞書をこのリポジトリ直下（README.md と同じ階層）に
+  -- 作る。本番の既定値は "~/.local/share/skk/SKK-JISYO.user"
+  -- （lua/skk/init.lua 参照）。
+  user_dictionary = vim.fn.getcwd() .. "/SKK-JISYO.user",
 })
 
 -- ===================================================================

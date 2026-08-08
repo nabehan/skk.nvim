@@ -219,6 +219,8 @@ function M.search()
   else
     key, has_okuri = session:dict_key()
   end
+  session.search_key = key
+  session.search_has_okuri = has_okuri
 
   local candidates = dict.lookup(key, has_okuri)
   session:set_candidates(candidates)
@@ -305,6 +307,11 @@ function M.confirm()
   if phase == "select" and session then
     local okurigana = render_for_mode(session.okuri_kana or "", session.source_mode)
     local candidate = session:current_candidate()
+    if candidate and session.search_key then
+      -- 個人辞書への学習。次回同じ読みを検索したとき、この候補が
+      -- 先頭に来るようにする（本家SKKと同じ recency-based の学習）。
+      dict.record_selection(session.search_key, session.search_has_okuri, candidate.word, candidate.annotation)
+    end
     M.confirm_text((candidate and candidate.word or "") .. okurigana)
   elseif (phase == "midashi" or phase == "abbrev") and session then
     -- <CR> は常にひらがな確定。session.reading は元々ひらがなの内部表現

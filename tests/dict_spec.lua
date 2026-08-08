@@ -55,3 +55,47 @@ describe("dict (空の辞書)", function()
     assert.are.equal(0, #dict.lookup("かんじ", false))
   end)
 end)
+
+describe("dict + 個人辞書のマージ", function()
+  local tmp_path
+
+  before_each(function()
+    local text = table.concat({
+      ";; okuri-ari entries.",
+      "うごk /動/",
+      ";; okuri-nasi entries.",
+      "かんじ /漢字/幹事/監事/",
+    }, "\n")
+    dict.set_dict(parser.parse(text))
+
+    tmp_path = vim.fn.tempname()
+    dict.set_user_dict_path(tmp_path)
+  end)
+
+  after_each(function()
+    os.remove(tmp_path)
+  end)
+
+  it("個人辞書に学習が無ければ、メイン辞書の順序そのまま", function()
+    local candidates = dict.lookup("かんじ", false)
+    assert.are.equal("漢字", candidates[1].word)
+    assert.are.equal("幹事", candidates[2].word)
+    assert.are.equal("監事", candidates[3].word)
+  end)
+
+  it("record_selection した候補が次回の検索で先頭に来る", function()
+    dict.record_selection("かんじ", false, "監事", nil)
+    local candidates = dict.lookup("かんじ", false)
+    assert.are.equal(3, #candidates)
+    assert.are.equal("監事", candidates[1].word)
+    assert.are.equal("漢字", candidates[2].word)
+    assert.are.equal("幹事", candidates[3].word)
+  end)
+
+  it("record_selection はディスクにも保存され、次回 set_user_dict_path で読み直せる", function()
+    dict.record_selection("かんじ", false, "幹事", nil)
+    dict.set_user_dict_path(tmp_path) -- 保存したファイルを読み直す
+    local candidates = dict.lookup("かんじ", false)
+    assert.are.equal("幹事", candidates[1].word)
+  end)
+end)

@@ -9,6 +9,7 @@
 local capture = require("skk.capture")
 local henkan_state = require("skk.henkan.state")
 local candidate_window = require("skk.henkan.candidate_window")
+local dict = require("skk.dict")
 
 local M = {}
 
@@ -24,6 +25,9 @@ local M = {}
 ---  border は nvim_open_win() の "border" と同じ形式（"rounded"/"single"/"double"/
 ---  "none"/自前の文字配列 等）。デフォルト "rounded"。
 ---  annotation: 辞書の注釈（";注釈"）を候補一覧に表示するか。デフォルト true。
+---@field user_dictionary string? 個人辞書（学習結果）ファイルのパス。文字コードは常にUTF-8固定
+---  （skkeleton の userDictionary の慣習に合わせている）。ファイルが無ければ自動的に作られる。
+---  デフォルト "~/.local/share/skk/SKK-JISYO.user"（skkeleton と同じ慣習のパス）。
 
 --- ▽/▼ 表示用のハイライトグループのデフォルトを定義する。
 --- 既にユーザーやカラースキームが定義済みなら上書きしない (default = true)。
@@ -36,6 +40,7 @@ end
 function M.setup(opts)
   opts = opts or {}
   local enter_key = opts.enter_key or "<C-j>"
+  local user_dictionary = opts.user_dictionary or vim.fn.expand("~/.local/share/skk/SKK-JISYO.user")
 
   setup_highlights()
   capture.setup({
@@ -44,6 +49,7 @@ function M.setup(opts)
     egg_like_newline = opts.egg_like_newline,
   })
   candidate_window.setup(opts.candidate_window or {})
+  dict.set_user_dict_path(user_dictionary)
 
   local function notify_mode()
     vim.notify("skk.nvim: " .. capture.mode_label())
