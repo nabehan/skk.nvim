@@ -156,6 +156,142 @@ describe("jisyo_parser.parse", function()
   end)
 end)
 
+describe("jisyo_parser.parse_async", function()
+  it("M.parse() と同じ結果を返す（非同期・チャンク分割でも結果は変わらない）", function()
+    local text = table.concat({
+      ";; okuri-ari entries.",
+      "うごk /動/",
+      ";; okuri-nasi entries.",
+      "かんじ /漢字;人名用/幹事/",
+      "かんじ /幹事/監事/", -- マージ確認
+    }, "\n")
+
+    local done = false
+    local result = nil
+    parser.parse_async(text, function(dict)
+      done = true
+      result = dict
+    end, 1) -- chunk_size=1 で複数ティックにまたがらせる
+
+    vim.wait(1000, function()
+      return done
+    end)
+
+    assert.is_true(done)
+    assert.are.equal("動", result.okuri_ari["うごk"][1].word)
+    local cands = result.okuri_nasi["かんじ"]
+    assert.are.equal(3, #cands)
+    assert.are.equal("漢字", cands[1].word)
+    assert.are.equal("人名用", cands[1].annotation)
+    assert.are.equal("幹事", cands[2].word)
+    assert.are.equal("監事", cands[3].word)
+  end)
+
+  it("空文字列でもチャンクサイズが十分大きければ同一フレーム内で完了する", function()
+    local done = false
+    parser.parse_async("", function(dict)
+      done = true
+      assert.are.same({}, dict.okuri_nasi)
+    end, 1000)
+    assert.is_true(done)
+  end)
+end)
+
+describe("jisyo_parser._parse_candidates_string", function()
+  it('"/候補1/候補2/" 形式をパースする', function()
+    local candidates = parser._parse_candidates_string("/漢字/幹事/")
+    assert.are.equal(2, #candidates)
+    assert.are.equal("漢字", candidates[1].word)
+    assert.are.equal("幹事", candidates[2].word)
+  end)
+
+  it("アノテーションを分離する", function()
+    local candidates = parser._parse_candidates_string("/漢字;人名用/幹事/")
+    assert.are.equal("漢字", candidates[1].word)
+    assert.are.equal("人名用", candidates[1].annotation)
+  end)
+
+  it(
+    "同じ word が複数回出てきたら最初の1つだけ残す（連結された生文字列の重複除去用）",
+    function()
+      -- build_raw_index() は同じreadingの複数行を生文字列のまま連結するので、
+      -- ここでのdedupが M.parse() の merge_into() と同じ役割を果たす。
+      local candidates = parser._parse_candidates_string("/漢字;最初/幹事//漢字;後から/監事/")
+      assert.are.equal(3, #candidates)
+      assert.are.equal("漢字", candidates[1].word)
+      assert.are.equal("最初", candidates[1].annotation) -- 後からのアノテーションでは上書きされない
+      assert.are.equal("幹事", candidates[2].word)
+      assert.are.equal("監事", candidates[3].word)
+    end
+  )
+end)
+
+describe("jisyo_parser.build_raw_index / build_raw_index_async", function()
+  it("build_raw_index は候補文字列を生のまま保持する（パースしない）", function()
+    local text = table.concat({
+      ";; okuri-ari entries.",
+      "うごk /動/",
+      ";; okuri-nasi entries.",
+      "かんじ /漢字;人名用/幹事/",
+    }, "\n")
+    local index = parser.build_raw_index(text)
+    assert.are.equal("/動/", index.okuri_ari["うごk"])
+    assert.are.equal("/漢字;人名用/幹事/", index.okuri_nasi["かんじ"])
+  end)
+
+  it(
+    "build_raw_index で作った生文字列を _parse_candidates_string に渡すと、parse() と同じ結果になる",
+    function()
+      local text = "かんじ /漢字;人名用/幹事/監事/"
+      local index = parser.build_raw_index(text)
+      local candidates = parser._parse_candidates_string(index.okuri_nasi["かんじ"])
+      local expected = parser.parse(text).okuri_nasi["かんじ"]
+      assert.are.equal(#expected, #candidates)
+      for i, c in ipairs(expected) do
+        assert.are.equal(c.word, candidates[i].word)
+        assert.are.equal(c.annotation, candidates[i].annotation)
+      end
+    end
+  )
+
+  it("同じ reading が複数行に分かれていても、生文字列を連結して保持する", function()
+    local text = table.concat({
+      "かんじ /漢字/幹事/",
+      "かんじ /幹事/監事/",
+    }, "\n")
+    local index = parser.build_raw_index(text)
+    local candidates = parser._parse_candidates_string(index.okuri_nasi["かんじ"])
+    assert.are.equal(3, #candidates)
+    assert.are.equal("漢字", candidates[1].word)
+    assert.are.equal("幹事", candidates[2].word)
+    assert.are.equal("監事", candidates[3].word)
+  end)
+
+  it("build_raw_index_async は build_raw_index と同じ結果を返す", function()
+    local text = table.concat({
+      ";; okuri-ari entries.",
+      "うごk /動/",
+      ";; okuri-nasi entries.",
+      "かんじ /漢字/幹事/",
+    }, "\n")
+
+    local done = false
+    local result = nil
+    parser.build_raw_index_async(text, function(index)
+      done = true
+      result = index
+    end, 1)
+
+    vim.wait(1000, function()
+      return done
+    end)
+
+    assert.is_true(done)
+    assert.are.equal("/動/", result.okuri_ari["うごk"])
+    assert.are.equal("/漢字/幹事/", result.okuri_nasi["かんじ"])
+  end)
+end)
+
 describe("jisyo_parser.serialize", function()
   it("parse() の結果を serialize() すると、同じ内容として parse() し直せる（往復）", function()
     local original_text = table.concat({

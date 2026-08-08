@@ -16,6 +16,15 @@ local M = {}
 ---@type { okuri_ari: table<string,SkkDictCandidate[]>, okuri_nasi: table<string,SkkDictCandidate[]> }|nil
 local loaded_dict = nil
 
+--- M.load_dictionary_async() が使う、候補文字列を遅延パースするための
+--- 生インデックス（jisyo_parser.build_raw_index_async() の戻り値）。
+--- 実際に検索されたreadingだけを parsed_cache にメモ化しながらパースする
+--- ことで、巨大な辞書（数十万エントリ）でも起動時に全件パースせずに済む。
+---@type { okuri_ari: table<string,string>, okuri_nasi: table<string,string> }|nil
+local raw_index = nil
+---@type { okuri_ari: table<string,SkkDictCandidate[]>, okuri_nasi: table<string,SkkDictCandidate[]> }
+local parsed_cache = { okuri_ari = {}, okuri_nasi = {} }
+
 --- パース済みの辞書データを登録する（jisyo_parser.parse() の戻り値）。
 --- 後続フェーズでは複数の辞書ソースをマージしたものをここに渡す想定。
 ---@param dict table
@@ -25,23 +34,45 @@ end
 
 ---@return boolean
 function M.is_ready()
-  return loaded_dict ~= nil
+  return loaded_dict ~= nil or raw_index ~= nil
+end
+
+--- raw_index からの遅延パース（メモ化付き）。
+---@param reading string
+---@param has_okuri boolean
+---@return SkkDictCandidate[]
+local function lookup_raw_index(reading, has_okuri)
+  local section = has_okuri and "okuri_ari" or "okuri_nasi"
+  local cached = parsed_cache[section][reading]
+  if cached ~= nil then
+    return cached
+  end
+
+  local raw = raw_index[section][reading]
+  local candidates = raw and jisyo_parser._parse_candidates_string(raw) or {}
+  parsed_cache[section][reading] = candidates
+  return candidates
 end
 
 --- 辞書ファイルを、Neovimの起動や編集操作をブロックしないように読み込んで
---- M.set_dict() まで行う。
+--- 登録する。
 ---
 --- SKK-JISYO.L（数MB）程度なら M.load()（同期）でも体感できるほどの遅延は
 --- 無いが、SKK-JISYO.LL のような大きな辞書（十数MB・数十万行）を
 --- 同期パースすると Neovim が数秒単位でフリーズする（実測あり）。
---- この関数は (1) ファイル読み込み・文字コード変換を vim.schedule() で
---- 起動完了後まで遅延させ、(2) パース本体は jisyo_parser.parse_async() で
---- チャンクに分割してイベントループに譲歩させながら進めることで、
---- 大きな辞書でもエディタの操作感を損なわない。
+--- この関数は次の2段構えで負荷を減らす:
+---   1. ファイル読み込み・文字コード変換・インデックス化を vim.schedule() で
+---      起動完了後まで遅延させ、インデックス化本体
+---      （jisyo_parser.build_raw_index_async()）はチャンクに分割して
+---      イベントループに譲歩させながら進める（候補文字列そのものはまだ
+---      パースしない。実測: 17MB・52万行で全文パースの半分以下の時間）。
+---   2. 実際の候補パースは、そのreadingが検索（lookup）された瞬間に
+---      初めて行い、結果をメモ化する。巨大な辞書でも実際に引かれる
+---      readingは全体のごく一部なので、体感の起動負荷をさらに減らせる。
 ---@param path string
 ---@param file_encoding string|nil ファイルの文字コード（省略時は "euc-jp"）
 ---@param on_done fun(ok: boolean, err: string|nil)|nil 完了時に呼ばれるコールバック（省略可）
----@param chunk_size integer|nil jisyo_parser.parse_async() に渡すチャンクサイズ
+---@param chunk_size integer|nil jisyo_parser.build_raw_index_async() に渡すチャンクサイズ
 function M.load_dictionary_async(path, file_encoding, on_done, chunk_size)
   vim.schedule(function()
     local utf8_text, err = file_source.read_and_decode(path, file_encoding)
@@ -51,8 +82,9 @@ function M.load_dictionary_async(path, file_encoding, on_done, chunk_size)
       end
       return
     end
-    jisyo_parser.parse_async(utf8_text, function(dict)
-      M.set_dict(dict)
+    jisyo_parser.build_raw_index_async(utf8_text, function(index)
+      raw_index = index
+      parsed_cache = { okuri_ari = {}, okuri_nasi = {} }
       if on_done then
         on_done(true, nil)
       end
@@ -69,6 +101,9 @@ end
 
 --- 読みから候補を検索する。個人辞書に学習済みの候補があれば先頭に、
 --- 続けてメイン辞書の候補（個人辞書と重複する word は除く）を返す。
+--- メイン辞書は M.set_dict()（同期・eager）と M.load_dictionary_async()
+--- （非同期・遅延パース）のどちらで登録されていても動く
+--- （前者が優先。両方登録されることは通常無い想定）。
 ---@param reading string 送りなしの場合は読みそのもの、送りありの場合は reading..okuri_consonant（例: "うごk"）
 ---@param has_okuri boolean
 ---@return SkkDictCandidate[] candidates 見つからなければ空配列。各要素は {word, annotation} のテーブル。
@@ -78,6 +113,8 @@ function M.lookup(reading, has_okuri)
   if loaded_dict then
     local bucket = has_okuri and loaded_dict.okuri_ari or loaded_dict.okuri_nasi
     main = bucket[reading] or {}
+  elseif raw_index then
+    main = lookup_raw_index(reading, has_okuri)
   end
 
   if #personal == 0 then
