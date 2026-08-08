@@ -110,8 +110,23 @@ function M.input_abbrev(char)
   end
   session:input_abbrev(char)
   preedit.show_abbrev(session.reading)
-end --- ▽の間にローマ字を1文字追加する。送り開始点が設定済みなら
+end
 
+--- abbrev モード専用: <C-q> 相当。ここまでの見出し（ASCII文字列）を
+--- 半角→全角変換してそのまま確定する（ddskk の「全角変換」相当）。
+--- 例: "manager" -> "ｍａｎａｇｅｒ"。
+function M.confirm_abbrev_zenkaku()
+  if phase ~= "abbrev" or not session then
+    return
+  end
+  local zenkaku = {}
+  for i = 1, #session.reading do
+    table.insert(zenkaku, kana_util.to_zenkaku_char(session.reading:sub(i, i)))
+  end
+  M.confirm_text(table.concat(zenkaku))
+end
+
+--- ▽の間にローマ字を1文字追加する。送り開始点が設定済みなら
 --- 送り仮名側の入力として扱い、子音+母音が確定した瞬間に
 --- 自動的に辞書検索（▼への遷移）を行う。
 ---@param char string

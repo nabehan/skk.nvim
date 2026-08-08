@@ -89,6 +89,7 @@ local BS_ALT = string.char(127) -- 一部の環境で Backspace が送る DEL
 local BS_TERMCODE = nil
 local CR = string.char(13) -- <CR> (Enter)
 local CTRL_G = string.char(7) -- <C-g>
+local CTRL_Q = string.char(17) -- <C-q>（abbrevモード専用: 全角変換して確定）
 
 -- ひらがな/カタカナモードで、確定したかなをどう表示するか。
 ---@type table<SkkMode, fun(s: string): string>
@@ -276,6 +277,12 @@ local function handle_henkan_key(key)
     -- ローマ字変換や大文字トリガー（送り開始点）の解釈をせず、印字可能
     -- ASCII文字はすべてそのまま見出しに追加する（大文字・記号・数字を含む。
     -- 例: "Bug", "Emacs" のような見出しをそのまま打てる）。
+    if key == CTRL_Q then
+      -- ddskk の「全角変換」相当。見出しのASCII文字列を全角に変換して
+      -- 確定する（例: "manager" -> "ｍａｎａｇｅｒ"）。
+      henkan_state.confirm_abbrev_zenkaku()
+      return false
+    end
     if is_printable_ascii(key) then
       henkan_state.input_abbrev(key)
       return false
@@ -333,6 +340,8 @@ end
 --- 処理に頼ることはできない（"" 未対応キーは自分で literal 挿入する）。
 ---@param key string
 local function reprocess_direct_key(key)
+  -- 判定順序の理由は on_key() 側の同種のコメントを参照（モード切替 (l/q/L)
+  -- を ▽開始/abbrev より先に判定しないと `L` がモード切替に到達できない）。
   if context.buffer == "" then
     local target = mode_util.char_transition(key, context.mode)
     if target then
@@ -361,36 +370,6 @@ local function reprocess_direct_key(key)
   -- そのまま literal に挿入する。
   replace_before_cursor(0, key)
 end
-
--- local function reprocess_direct_key(key)
---   if context.buffer == "" and is_midashi_trigger_key(key) then
---     henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
---     return
---   end
---
---   if context.buffer == "" and key == "/" then
---     -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
---     henkan_state.start_abbrev(context.mode)
---     return
---   end
---
---   if context.buffer == "" then
---     local target = mode_util.char_transition(key, context.mode)
---     if target then
---       context.mode = target
---       return
---     end
---   end
---
---   if is_target_key(key) then
---     process_romaji(key)
---     return
---   end
---
---   -- ローマ字にもモード切替にも該当しない印字可能文字（数字・記号等）を
---   -- そのまま literal に挿入する。
---   replace_before_cursor(0, key)
--- end
 
 ---@param key string 実際に処理されるキー（マッピング適用後）
 ---@param _typed string マッピング適用前に打鍵されたキー（未使用）
@@ -444,6 +423,14 @@ local function on_key(key, _typed)
   -- Sticky-shift の `;`（Shift を使わずに大文字キー相当の操作をする方法。
   -- `;` 自体は文字を持たないマーカーなので、最初の読みは "" になる）。
   -- （▽ の中での送り開始点トリガーは handle_henkan_key 側で処理する）。
+  --
+  -- 【重要】判定順序は「モード切替 (l/q/L) -> ▽開始 -> abbrev」でなければ
+  -- ならない。is_midashi_trigger_key() は大文字キー全般にマッチするため、
+  -- モード切替より先に判定すると `L`（全角英数への切替キー）が常に
+  -- ▽開始トリガーとして食われてしまい、ひらがな/カタカナモードで `L` を
+  -- 打っても全角英数モードに遷移できなくなる不具合になる（実際に発生した）。
+  -- `l`/`q` は小文字なので is_midashi_trigger_key() にはそもそもマッチせず
+  -- 問題にならないが、`L` だけはこの順序を守る必要がある。
   if context.buffer == "" then
     local target = mode_util.char_transition(key, context.mode)
     if target then
@@ -462,25 +449,6 @@ local function on_key(key, _typed)
     henkan_state.start_abbrev(context.mode)
     return ""
   end
-
-  -- if context.buffer == "" and is_midashi_trigger_key(key) then
-  --   henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
-  --   return ""
-  -- end
-  --
-  -- if context.buffer == "" and key == "/" then
-  --   -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
-  --   henkan_state.start_abbrev(context.mode)
-  --   return ""
-  -- end
-  --
-  -- if context.buffer == "" then
-  --   local target = mode_util.char_transition(key, context.mode)
-  --   if target then
-  --     context.mode = target
-  --     return "" -- 切り替えキー自体は破棄する（挿入しない）
-  --   end
-  -- end
 
   if not is_target_key(key) then
     -- 未確定のローマ字が画面に literal 表示されている状態で、ローマ字

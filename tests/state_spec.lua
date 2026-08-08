@@ -541,6 +541,16 @@ describe('state: abbrev モード（"/" 開始、ASCII見出し）', function()
     assert.is_false(state.is_active()) -- 空になったのでキャンセル扱い
   end)
 
+  it("<C-q> 相当（confirm_abbrev_zenkaku）は、見出しを全角変換して確定する", function()
+    state.start_abbrev("hira")
+    for ch in ("manager"):gmatch(".") do
+      state.input_abbrev(ch)
+    end
+    state.confirm_abbrev_zenkaku()
+    assert.are.equal("ｍａｎａｇｅｒ", last_inserted_text())
+    assert.is_false(state.is_active())
+  end)
+
   it("候補が見つからなければ、ASCII文字列そのままプレーンテキストで確定する", function()
     state.start_abbrev("hira")
     for ch in ("nosuchword"):gmatch(".") do

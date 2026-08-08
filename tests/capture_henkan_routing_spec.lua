@@ -11,6 +11,8 @@
 ---@type table[]
 local calls
 
+local mode_util = require("skk.mode")
+
 --- lua/skk/capture.lua の handle_henkan_key と同じルーティングルールを、
 --- モック henkan_state を使って再現する。
 ---@param henkan_state table
@@ -28,6 +30,7 @@ local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
   local BS_TERMCODE = string.char(128) .. "kb"
   local CR = string.char(13)
   local CTRL_G = string.char(7)
+  local CTRL_Q = string.char(17)
 
   if key == CR then
     henkan_state.confirm()
@@ -64,6 +67,10 @@ local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
   end
 
   if phase == "abbrev" then
+    if key == CTRL_Q then
+      henkan_state.confirm_abbrev_zenkaku()
+      return false
+    end
     if is_target_key(key) or key:match("%u") or key:match("%d") then
       -- abbrev は印字可能ASCIIならなんでも見出しに追加する（大文字も）。
       -- このモックの is_target_key は小文字とスペース等しか true にしない
@@ -118,6 +125,17 @@ local function route(henkan_state, is_target_key, key, sticky_shift)
     end
   end
 
+  -- 【重要】判定順序は「モード切替 (l/q/L) -> ▽開始 -> abbrev」でなければ
+  -- ならない。is_midashi_trigger_key 相当の判定（大文字キー全般にマッチ）を
+  -- 先にすると、`L`（全角英数への切替キー）が常に▽開始トリガーとして
+  -- 食われてしまい、モード切替に到達できなくなる回帰があった。
+  -- 実際の lua/skk/capture.lua も同じ順序で判定する（on_key 参照）。
+  local target = mode_util.char_transition(key, "hira")
+  if target then
+    table.insert(calls, { "mode_transition", target })
+    return
+  end
+
   if key:match("%u") then
     henkan_state.start_midashi("hira", key:lower())
     return
@@ -159,6 +177,7 @@ local function make_fake_state()
     "start_abbrev",
     "input",
     "input_abbrev",
+    "confirm_abbrev_zenkaku",
     "backspace",
     "space",
     "confirm",
@@ -223,6 +242,21 @@ describe("capture henkan routing: ▽ 開始トリガー", function()
     assert.are.equal("start_abbrev", calls[1][1])
     assert.are.equal("hira", calls[1][2])
   end)
+
+  it(
+    "回帰テスト: 'L' は▽開始トリガーより先にモード切替(全角英数)として判定される",
+    function()
+      -- 過去、大文字キー全般にマッチする▽開始判定がモード切替判定より
+      -- 先に走っていたため、'L' が常に▽開始として食われてしまい、
+      -- ひらがな/カタカナモードで 'L' を打っても全角英数に遷移できない
+      -- 不具合があった。
+      local fake = make_fake_state()
+      route(fake, is_target_key, "L")
+      assert.are.equal("mode_transition", calls[1][1])
+      assert.are.equal("zenei", calls[1][2])
+      assert.are.equal(nil, calls[2]) -- start_midashi は呼ばれない
+    end
+  )
 end)
 
 describe("capture henkan routing: Sticky-shift の設定（有効/無効・キー変更）", function()
@@ -378,6 +412,15 @@ describe('capture henkan routing: abbrev フェーズ（"/" 開始、ASCII見出
     fake._phase = "abbrev"
     route(fake, is_target_key, " ")
     assert.are.equal("space", calls[1][1])
+  end)
+
+  it("<C-q> は confirm_abbrev_zenkaku を呼ぶ（全角変換して確定）", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "abbrev"
+    route(fake, is_target_key, string.char(17))
+    assert.are.equal("confirm_abbrev_zenkaku", calls[1][1])
+    assert.are.equal(nil, calls[2])
   end)
 
   it("矢印キー等、印字可能ASCIIでないキーは確定のみ行う（再処理しない）", function()
