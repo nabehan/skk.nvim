@@ -49,8 +49,8 @@ package.loaded["skk.henkan.preedit"] = {
 local candidate_window_calls = {}
 package.loaded["skk.henkan.candidate_window"] = {
   HOME_ROW_KEYS = { "a", "s", "d", "f", "j", "k", "l" },
-  show = function(anchor_win, row, col, candidates)
-    table.insert(candidate_window_calls, { "show", anchor_win, row, col, candidates })
+  show = function(anchor_win, row, col, candidates, page, page_count)
+    table.insert(candidate_window_calls, { "show", anchor_win, row, col, candidates, page, page_count })
   end,
   hide = function()
     table.insert(candidate_window_calls, { "hide" })
@@ -265,6 +265,24 @@ describe("state: 辞書検索と▼遷移", function()
       assert.are.equal("8", last_inserted_text())
     end
   )
+
+  it("候補一覧ウィンドウには現在ページ番号と全ページ数が渡る", function()
+    dict.set_dict(parser.parse("かんじ /1/2/3/4/5/6/7/8/9/")) -- 9件 -> 2ページ
+    state.start_midashi("hira", "k")
+    for ch in ("anji"):gmatch(".") do
+      state.input(ch)
+    end
+    state.space() -- 1ページ目
+    local last_show = candidate_window_calls[#candidate_window_calls]
+    assert.are.equal("show", last_show[1])
+    assert.are.equal(1, last_show[6]) -- page (1-indexed)
+    assert.are.equal(2, last_show[7]) -- page_count
+
+    state.space() -- 2ページ目へ
+    last_show = candidate_window_calls[#candidate_window_calls]
+    assert.are.equal(2, last_show[6])
+    assert.are.equal(2, last_show[7])
+  end)
 
   it("前ページ（x）は先頭ページの前で末尾ページに循環する", function()
     dict.set_dict(parser.parse("かんじ /1/2/3/4/5/6/7/8/9/"))

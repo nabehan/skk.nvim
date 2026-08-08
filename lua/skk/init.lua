@@ -21,10 +21,11 @@ local M = {}
 ---  sticky_shift_enabled=false のときは無視される。
 ---@field egg_like_newline boolean? true: ▼状態での <CR> は確定のみ行い、改行は挿入しない
 ---  （skk.nvimのデフォルト）。false: 確定に加えて改行も挿入する（SKK本来の動作）。デフォルト true。
----@field candidate_window { border: string|string[], annotation: boolean }? 候補一覧ウィンドウの見た目。
+---@field candidate_window { border: string|string[], annotation: boolean, page_indicator: boolean }? 候補一覧ウィンドウの見た目。
 ---  border は nvim_open_win() の "border" と同じ形式（"rounded"/"single"/"double"/
 ---  "none"/自前の文字配列 等）。デフォルト "rounded"。
 ---  annotation: 辞書の注釈（";注釈"）を候補一覧に表示するか。デフォルト true。
+---  page_indicator: 最下行に "現在ページ/全ページ数"（例: "2/3"）を表示するか。デフォルト true。
 ---@field user_dictionary string? 個人辞書（学習結果）ファイルのパス。文字コードは常にUTF-8固定
 ---  （skkeleton の userDictionary の慣習に合わせている）。ファイルが無ければ自動的に作られる。
 ---  デフォルト "~/.local/share/skk/SKK-JISYO.user"（skkeleton と同じ慣習のパス）。

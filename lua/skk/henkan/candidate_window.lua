@@ -44,13 +44,14 @@ local sticky_row_offset = nil
 --- 差し込む。border は nvim_open_win() の "border" と同じ形式を受け付ける
 --- （"rounded"/"single"/"double"/"none"/自前の文字配列 等）。
 --- annotation は候補一覧ウィンドウにアノテーション（辞書の ";注釈"）を
---- 表示するかどうか。
----@type { border: string|string[], annotation: boolean }
-local config = { border = "rounded", annotation = true }
+--- 表示するかどうか。page_indicator は最下行の "現在ページ/全ページ数"
+--- （例: "2/3"）を表示するかどうか。
+---@type { border: string|string[], annotation: boolean, page_indicator: boolean }
+local config = { border = "rounded", annotation = true, page_indicator = true }
 
 --- 見た目のオプションを設定する。lua/skk/init.lua から setup() 時に呼ばれる。
 --- 未指定のキーはデフォルト値のまま維持する。
----@param opts { border: string|string[], annotation: boolean }|nil
+---@param opts { border: string|string[], annotation: boolean, page_indicator: boolean }|nil
 function M.setup(opts)
   opts = opts or {}
   if opts.border ~= nil then
@@ -58,6 +59,9 @@ function M.setup(opts)
   end
   if opts.annotation ~= nil then
     config.annotation = opts.annotation
+  end
+  if opts.page_indicator ~= nil then
+    config.page_indicator = opts.page_indicator
   end
 end
 
@@ -86,6 +90,17 @@ local function format_lines(candidates)
 end
 
 M._format_lines = format_lines -- テストから直接検証できるように公開しておく
+
+--- 最下行に表示する "現在ページ/全ページ数" のインジケーター行。
+--- 例: 3ページ中2ページ目を表示中なら "2/3"。
+---@param page integer 現在のページ（1-indexed）
+---@param page_count integer 全ページ数
+---@return string
+local function page_indicator_line(page, page_count)
+  return string.format("%d/%d", page, page_count)
+end
+
+M._page_indicator_line = page_indicator_line -- テストから直接検証できるように公開しておく
 
 -- ===================================================================
 -- フローティングウィンドウ表示（vim.* 依存）
@@ -162,17 +177,23 @@ M._compute_placement = compute_placement
 --- 候補一覧を、アンカー位置（変換プレエディットのカーソル位置）の
 --- すぐ下（入りきらなければ上）にフローティングウィンドウで表示する。
 --- 既に表示中なら、内容とサイズだけ更新する（ウィンドウを開き直さない）。
+--- 最下行に "現在ページ/全ページ数"（例: "2/3"）のインジケーターを付ける。
 ---@param anchor_win integer 基準となるウィンドウID
 ---@param anchor_row integer 0-indexed の行
 ---@param anchor_col integer 0-indexed の列
 ---@param candidates SkkDictCandidate[] 現在ページの候補一覧（最大7件）
-function M.show(anchor_win, anchor_row, anchor_col, candidates)
+---@param page integer 現在のページ（1-indexed）
+---@param page_count integer 全ページ数
+function M.show(anchor_win, anchor_row, anchor_col, candidates, page, page_count)
   if #candidates == 0 then
     M.hide()
     return
   end
 
   local lines = format_lines(candidates)
+  if config.page_indicator then
+    table.insert(lines, page_indicator_line(page, page_count))
+  end
   local b = get_buf()
   vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
 
@@ -225,6 +246,15 @@ function M.hide()
   win = nil
   sticky_corner = nil
   sticky_row_offset = nil
+end
+
+--- 現在表示中のバッファの行を返す（テスト用）。表示していなければ nil。
+---@return string[]|nil
+function M._buf_lines()
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return nil
+  end
+  return vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 end
 
 return M

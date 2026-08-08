@@ -20,6 +20,8 @@ require("skk").setup({
     -- "rounded"/"single"/"double"/"none"/自前の文字配列。省略時 "rounded"
     annotation = true,
     -- 候補一覧に辞書の注釈（;注釈）を表示するか。省略時 true
+    page_indicator = true,
+    -- false にすると最下行のページ表示（"2/3"など）を出さない
   },
 
   -- 実装試験中は、個人辞書をこのリポジトリ直下（README.md と同じ階層）に

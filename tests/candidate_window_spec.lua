@@ -62,6 +62,16 @@ describe("candidate_window._format_lines", function()
   end)
 end)
 
+describe("candidate_window._page_indicator_line", function()
+  it('"現在ページ/全ページ数" の形式になる', function()
+    assert.are.equal("2/3", candidate_window._page_indicator_line(2, 3))
+  end)
+
+  it('1ページしか無くても "1/1" と表示する', function()
+    assert.are.equal("1/1", candidate_window._page_indicator_line(1, 1))
+  end)
+end)
+
 describe("candidate_window.setup", function()
   it("border オプションを指定しなければデフォルト（rounded）のまま", function()
     -- 直接 config を覗く public API が無いので、setup({}) が
@@ -80,5 +90,24 @@ describe("candidate_window.setup", function()
     })
     assert.are.same({ "a: 木" }, lines) -- アノテーションが付かない
     candidate_window.setup({ annotation = true }) -- 他のテストに影響しないよう元に戻す
+  end)
+
+  it("page_indicator=true（デフォルト）では、show() の表示行末尾にページ行が付く", function()
+    candidate_window.show(0, 0, 0, { { word = "木" } }, 1, 1)
+    local lines = candidate_window._buf_lines()
+    assert.are.equal(2, #lines) -- 候補1行 + ページ行1行
+    assert.are.equal("a: 木", lines[1])
+    assert.are.equal("1/1", lines[2])
+    candidate_window.hide()
+  end)
+
+  it("page_indicator=false にすると、show() の表示行にページ行が付かない", function()
+    candidate_window.setup({ page_indicator = false })
+    candidate_window.show(0, 0, 0, { { word = "木" } }, 1, 1)
+    local lines = candidate_window._buf_lines()
+    assert.are.equal(1, #lines) -- 候補1行のみ
+    assert.are.equal("a: 木", lines[1])
+    candidate_window.hide()
+    candidate_window.setup({ page_indicator = true }) -- 他のテストに影響しないよう元に戻す
   end)
 end)

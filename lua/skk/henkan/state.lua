@@ -190,7 +190,7 @@ local function show_select_ui()
   local anchor_win = preedit.anchor_win()
   local _, row, col = preedit.anchor_position()
   if anchor_win and row ~= nil and col ~= nil then
-    candidate_window.show(anchor_win, row, col, session:page_candidates())
+    candidate_window.show(anchor_win, row, col, session:page_candidates(), session.page + 1, session:page_count())
   end
 end
 
