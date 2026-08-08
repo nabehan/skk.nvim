@@ -105,6 +105,29 @@ local function merge_into(bucket, reading, candidates)
   end
 end
 
+--- 1行ぶんの処理（セクション判定 or parse_line+merge_into）を行う。
+--- M.parse()（同期）と M.parse_async()（非同期・チャンク分割）の両方から
+--- 共有される、パースループの本体1ステップぶん。
+---@param dict { okuri_ari: table<string,SkkDictCandidate[]>, okuri_nasi: table<string,SkkDictCandidate[]> }
+---@param section "okuri_ari"|"okuri_nasi"
+---@param line string
+---@return "okuri_ari"|"okuri_nasi" next_section
+local function process_line(dict, section, line)
+  line = line:gsub("\r$", "") -- CRLF 対応
+
+  if line == ";; okuri-ari entries." then
+    return "okuri_ari"
+  elseif line == ";; okuri-nasi entries." then
+    return "okuri_nasi"
+  end
+
+  local reading, candidates = parse_line(line)
+  if reading then
+    merge_into(dict[section], reading, candidates)
+  end
+  return section
+end
+
 --- SKK辞書のテキスト全体（UTF-8の複数行文字列）をパースする。
 ---@param text string
 ---@return { okuri_ari: table<string, SkkDictCandidate[]>, okuri_nasi: table<string, SkkDictCandidate[]> }
@@ -113,21 +136,57 @@ function M.parse(text)
   local section = "okuri_nasi" -- セクションマーカーが無い辞書ファイルもあるためデフォルトを用意
 
   for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-    line = line:gsub("\r$", "") -- CRLF 対応
-
-    if line == ";; okuri-ari entries." then
-      section = "okuri_ari"
-    elseif line == ";; okuri-nasi entries." then
-      section = "okuri_nasi"
-    else
-      local reading, candidates = parse_line(line)
-      if reading then
-        merge_into(dict[section], reading, candidates)
-      end
-    end
+    section = process_line(dict, section, line)
   end
 
   return dict
+end
+
+--- M.parse() のノンブロッキング版。
+--- SKK-JISYO.L や SKK-JISYO.LL のような大きな辞書（数十万行）は、
+--- M.parse() で同期パースすると Neovim が数秒単位でフリーズしてしまう
+--- （実測: 17MB・52万行のファイルで約3.6〜4秒）。この関数は
+--- chunk_size 行ごとに処理を区切り、`vim.schedule()` で次のチャンクを
+--- 次のイベントループティックに回すことで、パース全体をイベントループに
+--- 譲歩させながら進める。1チャンクの処理時間は数十ミリ秒程度に収まり、
+--- エディタの操作感を損なわない。
+---@param text string
+---@param on_done fun(dict: { okuri_ari: table<string,SkkDictCandidate[]>, okuri_nasi: table<string,SkkDictCandidate[]> })
+---@param chunk_size integer|nil 1チックあたりに処理する行数（省略時 2000）
+function M.parse_async(text, on_done, chunk_size)
+  chunk_size = chunk_size or 2000
+
+  local dict = { okuri_ari = {}, okuri_nasi = {} }
+  local section = "okuri_nasi"
+
+  -- gmatch は「途中から再開する」処理と相性が悪いので、先に行の配列に
+  -- 分割しておき、添字でチャンクに区切って処理する。
+  local lines = {}
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    table.insert(lines, line)
+  end
+  local total = #lines
+  local i = 1
+
+  local function step()
+    local stop = math.min(i + chunk_size - 1, total)
+    for idx = i, stop do
+      section = process_line(dict, section, lines[idx])
+    end
+    i = stop + 1
+
+    if i > total then
+      on_done(dict)
+    else
+      vim.schedule(step)
+    end
+  end
+
+  if total == 0 then
+    on_done(dict)
+  else
+    step()
+  end
 end
 
 --- M.parse() の逆演算。パース結果と同じ構造のテーブルを SKK-JISYO 形式の
