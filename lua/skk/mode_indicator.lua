@@ -52,7 +52,7 @@ function M.show(mode)
     relative = "cursor",
     row = 1,
     col = 0,
-    width = 4, -- 全角グリフ1文字ぶん
+    width = 4, -- 全角グリフ2文字ぶん
     height = 1,
     style = "minimal",
     border = "none",
