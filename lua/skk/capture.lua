@@ -501,6 +501,11 @@ end
 
 --- <C-j> などの制御キーによるモード遷移を試みる。
 --- 現在のモードから見て遷移先が定義されていなければ何もしない。
+--- 【注意】この関数は init.lua が vim.keymap.set() 経由で直接呼ぶルートで、
+--- vim.on_key() の on_key() を通らない。そのためモードインジケーターの
+--- 表示もここで明示的に行う必要がある（on_key() 側の l/q/L 遷移とは
+--- 別経路なので、うっかり忘れると <C-j> だけインジケーターが出ない、
+--- という不具合になる。実際に発生した）。
 ---@param ctrl_key string 例: "<C-j>"
 ---@return SkkMode|nil 遷移後のモード（遷移しなかった場合は nil）
 function M.transition(ctrl_key)
@@ -510,6 +515,7 @@ function M.transition(ctrl_key)
   end
   context.mode = target
   context.buffer = "" -- 未確定のローマ字断片が残っていたら破棄する
+  mode_indicator.show(target)
   return context.mode
 end
 

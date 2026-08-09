@@ -18,8 +18,8 @@ local M = {}
 M.GLYPHS = {
   hira = "ひら",
   kata = "カタ",
-  ascii = "abcd",
-  zenei = "ＡＢ",
+  ascii = "latn",
+  zenei = "ＬＡ",
 }
 
 ---@type integer|nil
@@ -52,7 +52,7 @@ function M.show(mode)
     relative = "cursor",
     row = 1,
     col = 0,
-    width = 4, -- 全角グリフ2文字ぶん
+    width = 4, -- 全角グリフ2文字ぶん（"latn"のような半角4文字表記もこの幅に収まる）
     height = 1,
     style = "minimal",
     border = "none",
@@ -74,6 +74,16 @@ function M.hide()
     vim.api.nvim_win_close(win, true)
   end
   win = nil
+end
+
+--- 現在表示中のグリフ（テスト用）。表示していなければ nil。
+---@return string|nil
+function M._current_glyph()
+  if not win or not vim.api.nvim_win_is_valid(win) or not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return nil
+  end
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  return lines[1]
 end
 
 return M
