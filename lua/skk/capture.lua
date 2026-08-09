@@ -51,6 +51,7 @@ local Input = require("skk.input")
 local kana_util = require("skk.kana_util")
 local mode_util = require("skk.mode")
 local henkan_state = require("skk.henkan.state")
+local mode_indicator = require("skk.mode_indicator")
 
 local M = {}
 
@@ -261,14 +262,16 @@ local function handle_henkan_key(key)
       henkan_state.focus_prev()
       return false
     end
-    -- ホームポジションキー（a s d f j k l）は、現在ページの候補一覧
-    -- ウィンドウに表示されている位置に対応する候補を選択・即確定する。
-    -- そのキーの位置に候補が存在しない場合（候補が8件未満で、
-    -- ウィンドウ上でそのキーに何も表示されていない場合）は、
-    -- 下の「空以外のキー」共通処理にフォールバックする
-    -- （選択中の候補を確定したうえで、このキー自体を新しい入力として
-    -- 再処理する）。
-    if henkan_state.select_by_key(key) then
+    -- ホームポジションキー（a s d f j k l）は、候補一覧ウィンドウが
+    -- 実際に表示されている場合に限り、そのページ内の位置に対応する候補を
+    -- 選択・即確定する。ウィンドウがまだ表示されていない段階（インライン
+    -- ▼プレビューのみで1件ずつ送っている途中）では、ユーザーには
+    -- どのキーがどの候補に対応するか見えていないため、候補選択としては
+    -- 扱わない（見えない選択肢を選ばせる形になり、typoでの誤確定に
+    -- つながる。実際に報告のあった問題）。この場合は下の「空以外のキー」
+    -- 共通処理にフォールバックし、インライン表示中の候補を確定したうえで
+    -- このキー自体を新しい入力として引き継ぐ。
+    if henkan_state.is_candidate_window_visible() and henkan_state.select_by_key(key) then
       henkan_state.confirm()
       return false
     end
@@ -358,6 +361,7 @@ local function reprocess_direct_key(key)
     local target = mode_util.char_transition(key, context.mode)
     if target then
       context.mode = target
+      mode_indicator.show(target)
       return
     end
   end
@@ -387,6 +391,12 @@ end
 ---@param _typed string マッピング適用前に打鍵されたキー（未使用）
 ---@return string|nil
 local function on_key(key, _typed)
+  -- 実際のキー入力があったので、直前のモード切替インジケーターが
+  -- 残っていれば消す（ascii モードの完全パススルーより前に置く必要が
+  -- ある。そうしないと ascii モードで入力してもインジケーターが
+  -- 消えないままになる）。
+  mode_indicator.hide()
+
   if context.mode == "ascii" then
     return -- 完全パススルー。<C-j> は init.lua 側のキーマップで処理する
   end
@@ -447,6 +457,7 @@ local function on_key(key, _typed)
     local target = mode_util.char_transition(key, context.mode)
     if target then
       context.mode = target
+      mode_indicator.show(target)
       return "" -- 切り替えキー自体は破棄する（挿入しない）
     end
   end

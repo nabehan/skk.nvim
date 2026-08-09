@@ -87,6 +87,7 @@ function M.load_dictionary_async(path, file_encoding, on_done, time_budget_ms)
       return
     end
     jisyo_parser.build_raw_index_async(utf8_text, function(index)
+      loaded_dict = nil
       raw_index = index
       parsed_cache = { okuri_ari = {}, okuri_nasi = {} }
       if on_done then
@@ -106,8 +107,8 @@ end
 --- 読みから候補を検索する。個人辞書に学習済みの候補があれば先頭に、
 --- 続けてメイン辞書の候補（個人辞書と重複する word は除く）を返す。
 --- メイン辞書は M.set_dict()（同期・eager）と M.load_dictionary_async()
---- （非同期・遅延パース）のどちらで登録されていても動く
---- （前者が優先。両方登録されることは通常無い想定）。
+--- （非同期・遅延パース）のどちらでも登録できるが、常に最後に呼ばれた
+--- 方が有効になる（両方が同時に有効になることはない）。
 ---@param reading string 送りなしの場合は読みそのもの、送りありの場合は reading..okuri_consonant（例: "うごk"）
 ---@param has_okuri boolean
 ---@return SkkDictCandidate[] candidates 見つからなければ空配列。各要素は {word, annotation} のテーブル。

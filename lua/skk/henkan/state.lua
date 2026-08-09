@@ -366,10 +366,25 @@ function M.focus_prev()
   show_select_ui()
 end
 
+--- 候補一覧ウィンドウが（このセッション中に）既に表示されているかどうか。
+--- capture.lua が、ホームポジションキー（a s d f j k l）を「候補選択」
+--- として扱うか「直接入力」として扱うかの判定に使う。ウィンドウが
+--- 見えていない段階（<SPC> の打鍵回数が candidate_window_threshold に
+--- 達する前）でホームポジションキーを候補選択として食ってしまうと、
+--- 見えない選択肢を選ばされる形になり、typoでの誤確定につながる
+--- （実際に報告のあった問題）。
+---@return boolean
+function M.is_candidate_window_visible()
+  return phase == "select" and session ~= nil and (session.space_count or 0) >= config.candidate_window_threshold
+end
+
 --- ホームポジションキー（a s d f j k l）による候補選択。
 --- 現在ページの該当する位置に候補が無ければ何もせず nil を返す
 --- （呼び出し側の capture.lua は、nil の場合は従来通り
 --- 「確定して新しい入力として再処理」にフォールバックする）。
+--- 【注意】候補一覧ウィンドウが表示されているかどうかの判定は
+--- M.is_candidate_window_visible() 側の責務で、この関数自体は行わない
+--- （呼び出し側が先にチェックする設計）。
 ---@param key string
 ---@return SkkDictCandidate|nil selected_candidate
 function M.select_by_key(key)

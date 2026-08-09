@@ -606,6 +606,16 @@ describe("state: 候補一覧ウィンドウの表示タイミング（candidate
     assert.are.equal("show", candidate_window_calls[#candidate_window_calls][1])
   end)
 
+  it("is_candidate_window_visible(): threshold未到達ならfalse、到達したらtrue", function()
+    state.setup({ candidate_window_threshold = 2 })
+    start_kanji_henkan()
+    assert.is_false(state.is_candidate_window_visible()) -- まだ▼開始前
+    state.space() -- 1回目、インラインのみ
+    assert.is_false(state.is_candidate_window_visible())
+    state.space() -- 2回目、閾値到達 -> ウィンドウ表示
+    assert.is_true(state.is_candidate_window_visible())
+  end)
+
   it(
     "threshold=3: 1・2回目はインラインのみ、3回目でウィンドウ表示（ユーザー提示の例と同じ）",
     function()

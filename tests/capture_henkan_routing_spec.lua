@@ -66,7 +66,7 @@ local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
       henkan_state.focus_prev()
       return false
     end
-    if henkan_state.select_by_key(key) then
+    if henkan_state.is_candidate_window_visible() and henkan_state.select_by_key(key) then
       henkan_state.confirm()
       return false
     end
@@ -174,12 +174,16 @@ local function make_fake_state()
   local fake = {
     _active = false,
     _phase = "idle",
+    _window_visible = true, -- 既存テストは「ウィンドウは表示済み」を前提にしているのでデフォルトtrue
   }
   fake.is_active = function()
     return fake._active
   end
   fake.get_phase = function()
     return fake._phase
+  end
+  fake.is_candidate_window_visible = function()
+    return fake._window_visible
   end
   for _, name in ipairs({
     "start_midashi",
@@ -512,6 +516,48 @@ describe("capture henkan routing: ▼ (select) フェーズ", function()
       assert.are.equal("confirm", calls[2][1])
       assert.are.equal("process_romaji", calls[3][1])
       assert.are.equal("s", calls[3][2])
+    end
+  )
+
+  it(
+    "回帰テスト: 候補ウィンドウが非表示（インラインプレビューのみ）の間は、ホームポジションキーでも候補選択にならない",
+    function()
+      -- 以前は select_by_key() の結果だけを見ていたため、ウィンドウが
+      -- まだ表示されていない（<SPC> の打鍵回数が閾値未満の）段階でも
+      -- a/s/d/f/j/k/l が候補選択として食われてしまい、typoでの誤確定に
+      -- つながる問題があった。ウィンドウ非表示中は select_by_key() 自体を
+      -- 呼ばず、常に「確定して直接入力として再処理」になるべき。
+      local fake = make_fake_state()
+      fake._active = true
+      fake._phase = "select"
+      fake._window_visible = false
+      fake.select_by_key = function(key)
+        table.insert(calls, { "select_by_key", key })
+        return "期" -- 候補は見つかる状況でも、ウィンドウ非表示中は使われないはず
+      end
+      route(fake, is_target_key, "s")
+      -- select_by_key 自体が呼ばれない（短絡評価で is_candidate_window_visible() が先に false を返す）
+      assert.are.equal("confirm", calls[1][1])
+      assert.are.equal("process_romaji", calls[2][1])
+      assert.are.equal("s", calls[2][2])
+    end
+  )
+
+  it(
+    "ウィンドウ表示中（デフォルト）は、これまで通りホームポジションキーで即選択・確定する",
+    function()
+      local fake = make_fake_state()
+      fake._active = true
+      fake._phase = "select"
+      fake._window_visible = true
+      fake.select_by_key = function(key)
+        table.insert(calls, { "select_by_key", key })
+        return "期"
+      end
+      route(fake, is_target_key, "s")
+      assert.are.equal("select_by_key", calls[1][1])
+      assert.are.equal("confirm", calls[2][1])
+      assert.are.equal(nil, calls[3])
     end
   )
 
