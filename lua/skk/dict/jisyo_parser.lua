@@ -157,51 +157,89 @@ function M.parse(text)
   return dict
 end
 
---- M.parse() のノンブロッキング版。
---- SKK-JISYO.L や SKK-JISYO.LL のような大きな辞書（数十万行）は、
---- M.parse() で同期パースすると Neovim が数秒単位でフリーズしてしまう
---- （実測: 17MB・52万行のファイルで約3.6〜4秒）。この関数は
---- chunk_size 行ごとに処理を区切り、`vim.schedule()` で次のチャンクを
---- 次のイベントループティックに回すことで、パース全体をイベントループに
---- 譲歩させながら進める。1チャンクの処理時間は数十ミリ秒程度に収まり、
---- エディタの操作感を損なわない。
----@param text string
----@param on_done fun(dict: { okuri_ari: table<string,SkkDictCandidate[]>, okuri_nasi: table<string,SkkDictCandidate[]> })
----@param chunk_size integer|nil 1チックあたりに処理する行数（省略時 2000）
-function M.parse_async(text, on_done, chunk_size)
-  chunk_size = chunk_size or 2000
-
-  local dict = { okuri_ari = {}, okuri_nasi = {} }
-  local section = "okuri_nasi"
-
-  -- gmatch は「途中から再開する」処理と相性が悪いので、先に行の配列に
-  -- 分割しておき、添字でチャンクに区切って処理する。
-  local lines = {}
-  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-    table.insert(lines, line)
-  end
+--- 何行かに1回だけ os.clock() を確認しながら、行配列を先頭から処理する
+--- 汎用ランナー。固定行数でチャンクを区切るより優れている: 実行速度
+--- （LuaJIT かどうか、CPUの速さ等）に自動で適応するので、ファイルの
+--- 大小によらずイベントループへ譲歩する回数（vim.schedule() の呼び出し
+--- 回数）を最小限に抑えられる。
+--- 【背景】固定行数（例: 2000行/チック）で区切っていたところ、実際の
+--- インタラクティブなNeovim上では vim.schedule() 1回あたりのオーバー
+--- ヘッドがヘッドレス環境よりずっと大きく、行数の少ない辞書
+--- （SKK-JISYO.L 相当）ではチャンク化のオーバーヘッドの方が支配的に
+--- なり、かえって遅くなる回帰が実際に発生した。時間予算方式なら
+--- チャンク数自体が減るため、この種の環境依存のオーバーヘッドに
+--- 強くなる。
+---@param lines string[]
+---@param process_one fun(idx: integer) 1行ぶんを処理するコールバック
+---@param on_done fun()
+---@param time_budget_ms number|nil 1チックあたりの目安処理時間（省略時 30ms）
+local function run_chunked(lines, process_one, on_done, time_budget_ms)
+  local budget_s = (time_budget_ms or 30) / 1000
   local total = #lines
   local i = 1
+  local CLOCK_CHECK_INTERVAL = 500 -- os.clock() 呼び出し自体のオーバーヘッドを避けるため間引く
 
   local function step()
-    local stop = math.min(i + chunk_size - 1, total)
-    for idx = i, stop do
-      section = process_line(dict, section, lines[idx])
+    local deadline = os.clock() + budget_s
+    local since_check = 0
+    while i <= total do
+      process_one(i)
+      i = i + 1
+      since_check = since_check + 1
+      if since_check >= CLOCK_CHECK_INTERVAL then
+        since_check = 0
+        if os.clock() >= deadline then
+          break
+        end
+      end
     end
-    i = stop + 1
 
     if i > total then
-      on_done(dict)
+      on_done()
     else
       vim.schedule(step)
     end
   end
 
   if total == 0 then
-    on_done(dict)
+    on_done()
   else
     step()
   end
+end
+
+--- SKK辞書のテキスト全体を行配列に分割する（末尾に改行が無くても最終行を拾う）。
+---@param text string
+---@return string[]
+local function split_lines(text)
+  local lines = {}
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    table.insert(lines, line)
+  end
+  return lines
+end
+
+--- M.parse() のノンブロッキング版。
+--- SKK-JISYO.L や SKK-JISYO.LL のような大きな辞書（数十万行）は、
+--- M.parse() で同期パースすると Neovim が数秒単位でフリーズしてしまう
+--- （実測: 17MB・52万行のファイルで約3.6〜4秒。この開発環境の Lua 5.4 での
+--- 計測で、実際の Neovim の LuaJIT ならもっと速い可能性が高い）。
+--- この関数は time_budget_ms ぶんの処理が終わるたびに `vim.schedule()` で
+--- 次のイベントループティックに続きを回すことで、パース全体をイベント
+--- ループに譲歩させながら進める。
+---@param text string
+---@param on_done fun(dict: { okuri_ari: table<string,SkkDictCandidate[]>, okuri_nasi: table<string,SkkDictCandidate[]> })
+---@param time_budget_ms number|nil 1チックあたりの目安処理時間（ミリ秒。省略時 30）
+function M.parse_async(text, on_done, time_budget_ms)
+  local dict = { okuri_ari = {}, okuri_nasi = {} }
+  local section = "okuri_nasi"
+  local lines = split_lines(text)
+
+  run_chunked(lines, function(idx)
+    section = process_line(dict, section, lines[idx])
+  end, function()
+    on_done(dict)
+  end, time_budget_ms)
 end
 
 --- 1行ぶんの軽量インデックス化を行う。候補文字列はパースせず、
@@ -262,42 +300,20 @@ function M.build_raw_index(text)
 end
 
 --- M.build_raw_index() のノンブロッキング版（M.parse_async() と同じ
---- チャンク分割の考え方）。
+--- 時間予算方式のチャンク分割）。
 ---@param text string
 ---@param on_done fun(index: { okuri_ari: table<string,string>, okuri_nasi: table<string,string> })
----@param chunk_size integer|nil 1チックあたりに処理する行数（省略時 2000）
-function M.build_raw_index_async(text, on_done, chunk_size)
-  chunk_size = chunk_size or 2000
-
+---@param time_budget_ms number|nil 1チックあたりの目安処理時間（ミリ秒。省略時 30）
+function M.build_raw_index_async(text, on_done, time_budget_ms)
   local index = { okuri_ari = {}, okuri_nasi = {} }
   local section = "okuri_nasi"
+  local lines = split_lines(text)
 
-  local lines = {}
-  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-    table.insert(lines, line)
-  end
-  local total = #lines
-  local i = 1
-
-  local function step()
-    local stop = math.min(i + chunk_size - 1, total)
-    for idx = i, stop do
-      section = process_line_for_index(index, section, lines[idx])
-    end
-    i = stop + 1
-
-    if i > total then
-      on_done(index)
-    else
-      vim.schedule(step)
-    end
-  end
-
-  if total == 0 then
+  run_chunked(lines, function(idx)
+    section = process_line_for_index(index, section, lines[idx])
+  end, function()
     on_done(index)
-  else
-    step()
-  end
+  end, time_budget_ms)
 end
 
 --- M.parse() の逆演算。パース結果と同じ構造のテーブルを SKK-JISYO 形式の

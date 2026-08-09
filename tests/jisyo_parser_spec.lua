@@ -171,7 +171,7 @@ describe("jisyo_parser.parse_async", function()
     parser.parse_async(text, function(dict)
       done = true
       result = dict
-    end, 1) -- chunk_size=1 で複数ティックにまたがらせる
+    end, 1) -- time_budget_ms=1（極小）。小さいテキストなので実際は1ティックで終わる
 
     vim.wait(1000, function()
       return done
@@ -195,6 +195,34 @@ describe("jisyo_parser.parse_async", function()
     end, 1000)
     assert.is_true(done)
   end)
+
+  it(
+    "時間予算方式: 十分な行数 + 極小予算なら、複数ティックにまたがって非同期に完了する",
+    function()
+      -- CLOCK_CHECK_INTERVAL（500行）を超える行数を用意し、time_budget_ms を
+      -- 極小にすることで、1回目の step() 内で必ず時間切れ判定に達し、
+      -- vim.schedule() で次のティックに回されることを確認する
+      -- （＝呼び出した直後の同一フレーム内ではまだ完了していない）。
+      local lines = {}
+      for i = 1, 3000 do
+        table.insert(lines, "よみ" .. i .. " /候補" .. i .. "/")
+      end
+      local text = table.concat(lines, "\n")
+
+      local done = false
+      parser.parse_async(text, function()
+        done = true
+      end, 0.001) -- ほぼゼロに近い予算
+
+      -- 呼び出し直後、まだ完了していないはず（複数ティックにまたがるため）
+      assert.is_false(done)
+
+      vim.wait(2000, function()
+        return done
+      end)
+      assert.is_true(done)
+    end
+  )
 end)
 
 describe("jisyo_parser._parse_candidates_string", function()

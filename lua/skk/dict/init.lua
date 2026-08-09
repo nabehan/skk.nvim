@@ -26,10 +26,14 @@ local raw_index = nil
 local parsed_cache = { okuri_ari = {}, okuri_nasi = {} }
 
 --- パース済みの辞書データを登録する（jisyo_parser.parse() の戻り値）。
---- 後続フェーズでは複数の辞書ソースをマージしたものをここに渡す想定。
+--- M.load_dictionary_async() で登録した辞書（raw_index）があれば、
+--- こちらを呼ぶと置き換える（両方が同時に有効になることはない。
+--- 常に最後に呼ばれた方が「メイン辞書」になる）。
 ---@param dict table
 function M.set_dict(dict)
   loaded_dict = dict
+  raw_index = nil
+  parsed_cache = { okuri_ari = {}, okuri_nasi = {} }
 end
 
 ---@return boolean
@@ -72,8 +76,8 @@ end
 ---@param path string
 ---@param file_encoding string|nil ファイルの文字コード（省略時は "euc-jp"）
 ---@param on_done fun(ok: boolean, err: string|nil)|nil 完了時に呼ばれるコールバック（省略可）
----@param chunk_size integer|nil jisyo_parser.build_raw_index_async() に渡すチャンクサイズ
-function M.load_dictionary_async(path, file_encoding, on_done, chunk_size)
+---@param time_budget_ms number|nil jisyo_parser.build_raw_index_async() に渡す、1チックあたりの目安処理時間（ミリ秒）
+function M.load_dictionary_async(path, file_encoding, on_done, time_budget_ms)
   vim.schedule(function()
     local utf8_text, err = file_source.read_and_decode(path, file_encoding)
     if not utf8_text then
@@ -88,7 +92,7 @@ function M.load_dictionary_async(path, file_encoding, on_done, chunk_size)
       if on_done then
         on_done(true, nil)
       end
-    end, chunk_size)
+    end, time_budget_ms)
   end)
 end
 

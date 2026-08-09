@@ -116,6 +116,11 @@ describe("dict.load_dictionary_async（遅延パース）", function()
       "かんじ /漢字;人名用/幹事/監事/",
     }, "\n"))
     f:close()
+
+    -- user_dict はモジュール単位のシングルトン状態を持つため、他の
+    -- describe ブロックで記録された学習内容が残らないよう、ここでも
+    -- 毎回フレッシュな個人辞書パスに切り替えておく。
+    dict.set_user_dict_path(vim.fn.tempname())
   end)
 
   after_each(function()
