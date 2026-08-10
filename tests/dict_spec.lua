@@ -235,3 +235,67 @@ describe("dict.load_dictionary_async（遅延パース）", function()
     os.remove(user_tmp)
   end)
 end)
+
+describe("dict.add_dictionary_async（複数辞書を非同期で追加）", function()
+  local tmp_path_a, tmp_path_b
+
+  before_each(function()
+    dict.clear_dicts()
+    dict.set_user_dict_path(vim.fn.tempname())
+
+    tmp_path_a = vim.fn.tempname()
+    local fa = io.open(tmp_path_a, "w")
+    fa:write("かんじ /漢字/幹事/")
+    fa:close()
+
+    tmp_path_b = vim.fn.tempname()
+    local fb = io.open(tmp_path_b, "w")
+    fb:write("かんじ /監事/慣事/")
+    fb:close()
+  end)
+
+  after_each(function()
+    os.remove(tmp_path_a)
+    os.remove(tmp_path_b)
+  end)
+
+  it("2つの辞書を追加すると、両方の候補が登録順優先でマージされる", function()
+    local done_a, done_b = false, false
+    dict.add_dictionary_async(tmp_path_a, "utf-8", function()
+      done_a = true
+    end, nil, "a")
+    dict.add_dictionary_async(tmp_path_b, "utf-8", function()
+      done_b = true
+    end, nil, "b")
+
+    vim.wait(2000, function()
+      return done_a and done_b
+    end)
+
+    assert.is_true(done_a)
+    assert.is_true(done_b)
+
+    local candidates = dict.lookup("かんじ", false)
+    assert.are.equal(4, #candidates)
+    assert.are.equal("漢字", candidates[1].word)
+    assert.are.equal("幹事", candidates[2].word)
+    assert.are.equal("監事", candidates[3].word)
+    assert.are.equal("慣事", candidates[4].word)
+  end)
+
+  it("load_dictionary_async と add_dictionary_async を混ぜても、load の方が全て置き換える", function()
+    local done = false
+    dict.add_dictionary_async(tmp_path_a, "utf-8", function() end, nil, "a")
+    dict.load_dictionary_async(tmp_path_b, "utf-8", function()
+      done = true
+    end)
+    vim.wait(2000, function()
+      return done
+    end)
+    local candidates = dict.lookup("かんじ", false)
+    -- tmp_path_a（漢字/幹事）は置き換えられ、tmp_path_b（監事/慣事）だけが残る
+    assert.are.equal(2, #candidates)
+    assert.are.equal("監事", candidates[1].word)
+    assert.are.equal("慣事", candidates[2].word)
+  end)
+end)
