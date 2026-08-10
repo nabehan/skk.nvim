@@ -59,6 +59,48 @@ describe("dict (空の辞書)", function()
   end)
 end)
 
+describe("dict 複数辞書のマージ（add_dict / clear_dicts）", function()
+  before_each(function()
+    dict.clear_dicts()
+  end)
+
+  it("add_dict は既存のソースを消さずに追加する（優先順位は登録順）", function()
+    dict.add_dict(parser.parse("かんじ /漢字/幹事/"), "primary")
+    dict.add_dict(parser.parse("かんじ /監事/慣事/"), "secondary")
+    local candidates = dict.lookup("かんじ", false)
+    -- 先に追加した primary の候補が先に来て、secondary の重複しない分が続く
+    assert.are.equal(4, #candidates)
+    assert.are.equal("漢字", candidates[1].word)
+    assert.are.equal("幹事", candidates[2].word)
+    assert.are.equal("監事", candidates[3].word)
+    assert.are.equal("慣事", candidates[4].word)
+  end)
+
+  it("word が重複する候補は、優先順位が高い（先に登録した）方だけ残す", function()
+    dict.add_dict(parser.parse("かんじ /漢字;先に登録/"), "primary")
+    dict.add_dict(parser.parse("かんじ /漢字;後から登録/"), "secondary")
+    local candidates = dict.lookup("かんじ", false)
+    assert.are.equal(1, #candidates)
+    assert.are.equal("先に登録", candidates[1].annotation)
+  end)
+
+  it("set_dict は既存のソースを全て置き換える（add_dict とは違う）", function()
+    dict.add_dict(parser.parse("かんじ /漢字/"), "a")
+    dict.add_dict(parser.parse("べつ /別/"), "b")
+    dict.set_dict(parser.parse("あたらしい /新しい/"))
+    assert.are.equal(0, #dict.lookup("かんじ", false))
+    assert.are.equal(0, #dict.lookup("べつ", false))
+    assert.are.equal("新しい", dict.lookup("あたらしい", false)[1].word)
+  end)
+
+  it("clear_dicts で全てのローカル辞書ソースが消える（is_ready も false になる）", function()
+    dict.add_dict(parser.parse("かんじ /漢字/"), "a")
+    dict.clear_dicts()
+    assert.is_false(dict.is_ready())
+    assert.are.equal(0, #dict.lookup("かんじ", false))
+  end)
+end)
+
 describe("dict + 個人辞書のマージ", function()
   local tmp_path
 
