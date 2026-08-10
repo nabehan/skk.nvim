@@ -25,6 +25,8 @@ vim.opt.runtimepath:append(vim.fn.getcwd())
 --   nvim -u ./skk_test_init.lua
 
 local setup_opts = {
+  skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" },
+
   enter_key = "<C-j>",
   -- 半角英数/全角英数 -> ひらがな。henkan 中は <CR> 相当（確定）。省略時 "<C-j>"
 
@@ -49,8 +51,6 @@ local setup_opts = {
     -- 省略時のデフォルト。1にすると、これまで通り最初の<SPC>で即ウィンドウ表示
   },
 
-  skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" },
-
   -- 実装試験中は、個人辞書をこのリポジトリ直下（README.md と同じ階層）に
   -- 作る。本番の既定値は "~/.local/share/skk/SKK-JISYO.user"
   -- （lua/skk/init.lua 参照）。
@@ -67,6 +67,12 @@ if skkserv_host then
 end
 
 require("skk").setup(setup_opts)
+
+local dict = require("skk.dict")
+dict.load_dictionary_async("SKK-JISYO.L", "euc-jp")
+dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.edict2", "utf-8")
+dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.emoji", "utf-8")
+dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.emoji-ja", "utf-8")
 
 -- ===================================================================
 -- 動作確認用の辞書読み込み
