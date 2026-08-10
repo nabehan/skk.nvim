@@ -1,17 +1,22 @@
 -- lua/skk/dict/skkserv.lua
 --
--- SKKサーバー（skkserv/dbskkd-cdb 等、伝統的な SKK server protocol を
--- 話すサーバー）への TCP クライアント。
+-- SKKサーバー（skkserv/dbskkd-cdb/yaskkserv2 等、伝統的な SKK server
+-- protocol を話すサーバー）への TCP クライアント。
 --
 -- 【プロトコル（実装した範囲）】
 --   検索リクエスト: "1" .. reading .. "\n"（reading はサーバーの
---     エンコーディング、伝統的には EUC-JP、で送る）
+--     エンコーディング、伝統的には EUC-JP、で送る。ただし yaskkserv2 の
+--     ような比較的新しいサーバーは UTF-8 がデフォルトのことがあるので、
+--     `encoding = "utf-8"` を試す価値がある。設定は setup() で行う）
 --   検索成功レスポンス: "1/候補1/候補2/.../\n"
 --   検索失敗レスポンス: "4" .. reading .. "\n"（reading をそのまま返す）
 --   バージョン確認: "2\n" -> バージョン文字列
 -- 【注意】プロトコルの細部（サーバー実装によって微妙な差異が起こりうる）
 -- は tests/fixtures/fake_skkserv.py という自作の簡易サーバーで検証した
--- 範囲に限られる。実際の skkserv/dbskkd-cdb での動作確認が必要。
+-- 範囲に限られる。実際の skkserv/dbskkd-cdb/yaskkserv2 での動作確認が
+-- 必要。`debug = true` を設定すると、送受信の生データを vim.notify() で
+-- 出力できる（接続はできるのに変換されない、という場合の切り分け用。
+-- 典型的な原因はエンコーディングの不一致）。
 --
 -- dict.lookup() は henkan/state.lua から同期APIとして呼ばれるため、
 -- 内部では非同期TCP通信を vim.wait() でポーリングして待つラッパーに
@@ -25,7 +30,7 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 
----@type { host: string, port: integer, encoding: string, timeout_ms: integer }|nil
+---@type { host: string, port: integer, encoding: string, timeout_ms: integer, debug: boolean }|nil
 local config = nil
 
 ---@type uv_tcp_t|nil
@@ -38,20 +43,50 @@ local connecting = false
 local last_connect_failure = nil
 local RECONNECT_COOLDOWN_MS = 5000
 
+--- 直近の lookup()/get_version() が何で終わったか（診断用）。
+--- "ok" | "not_configured" | "connect_failed" | "timeout" | "error"
+---@type string
+local last_status = "not_configured"
+
+---@param label string
+---@param ... any
+local function debug_notify(label, ...)
+  if not (config and config.debug) then
+    return
+  end
+  local parts = { "skkserv debug: " .. label }
+  for _, v in ipairs({ ... }) do
+    table.insert(parts, tostring(v))
+  end
+  vim.schedule(function()
+    vim.notify(table.concat(parts, " "))
+  end)
+end
+
+--- 直近の通信結果（診断用）。"ok" | "not_configured" | "connect_failed" |
+--- "timeout" | "error"
+---@return string
+function M.last_status()
+  return last_status
+end
+
 --- SKKサーバーへの接続を設定する。実際の接続は初回 lookup() 時に行う
 --- （setup() 自体はネットワークI/Oを行わない）。
----@param opts { host: string, port: integer?, encoding: string?, timeout_ms: integer? }|nil
+---@param opts { host: string, port: integer?, encoding: string?, timeout_ms: integer?, debug: boolean? }|nil
 --- nil を渡すと無効化する。
 function M.setup(opts)
   if opts == nil then
     config = nil
+    last_status = "not_configured"
   else
     config = {
       host = opts.host,
       port = opts.port or 1178,
       encoding = opts.encoding or "euc-jp",
       timeout_ms = opts.timeout_ms or 300,
+      debug = opts.debug or false,
     }
+    last_status = "ok" -- まだ何も通信していないが、"not_configured" は抜ける
   end
   if client then
     pcall(function()
@@ -169,24 +204,30 @@ end
 --- SKKサーバーへ読みを検索する（同期的な見た目のAPI）。
 --- setup() されていない、接続できない、タイムアウトした場合は
 --- いずれも空配列を返す（henkan の変換フロー自体は止めない）。
+--- 結果の詳細は M.last_status() で確認できる（診断用）。
 ---@param reading string
 ---@param has_okuri boolean 送りありの場合、reading は既に送り仮名の
 ---  子音を含む形（例: "うごk"）。メイン辞書と同じ規約でそのまま送る。
 ---@return SkkDictCandidate[]
 function M.lookup(reading, has_okuri)
   if not config then
+    last_status = "not_configured"
     return {}
   end
 
   local query, conv_err = encoding.convert(reading, "utf-8", config.encoding)
   if not query then
+    last_status = "error"
+    debug_notify("encode failed:", conv_err)
     return {}
   end
 
   local response = nil
+  local connect_ok = nil
   local done = false
 
   ensure_connected(function(ok)
+    connect_ok = ok
     if not ok then
       done = true
       return
@@ -226,6 +267,7 @@ function M.lookup(reading, has_okuri)
       return
     end
 
+    debug_notify("send:", "1" .. query)
     local ok_write = pcall(function()
       client:write("1" .. query .. "\n")
     end)
@@ -238,11 +280,73 @@ function M.lookup(reading, has_okuri)
     return done
   end, 5)
 
-  if not response then
+  if connect_ok == false then
+    last_status = "connect_failed"
+    debug_notify("connect failed to", config.host .. ":" .. config.port)
     return {}
   end
 
+  if not response then
+    last_status = "timeout"
+    debug_notify("timeout waiting for response (timeout_ms=" .. config.timeout_ms .. ")")
+    return {}
+  end
+
+  debug_notify("recv:", response:gsub("\n$", ""))
+  last_status = "ok"
   return M._parse_response(response)
+end
+
+--- サーバーのバージョン文字列を取得する（"2" コマンド）。エンコーディングに
+--- 依存しない単純な接続確認として使える（かな漢字変換の候補が
+--- 見つからない場合、まずこれで TCP レベルの疎通を切り分けるとよい）。
+---@return string|nil version サーバーが応答しなければ nil
+function M.get_version()
+  if not config then
+    return nil
+  end
+
+  local response = nil
+  local connect_ok = nil
+  local done = false
+
+  ensure_connected(function(ok)
+    connect_ok = ok
+    if not ok then
+      done = true
+      return
+    end
+    local chunks = {}
+    pcall(function()
+      client:read_start(function(err, chunk)
+        if err or not chunk then
+          done = true
+          return
+        end
+        table.insert(chunks, chunk)
+        local full = table.concat(chunks)
+        if full:find("\n", 1, true) then
+          pcall(function()
+            client:read_stop()
+          end)
+          response = full
+          done = true
+        end
+      end)
+    end)
+    pcall(function()
+      client:write("2\n")
+    end)
+  end)
+
+  vim.wait(config.timeout_ms, function()
+    return done
+  end, 5)
+
+  if connect_ok == false or not response then
+    return nil
+  end
+  return (response:gsub("\n$", ""))
 end
 
 return M

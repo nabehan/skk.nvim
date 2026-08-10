@@ -165,13 +165,27 @@ function M.add_dictionary_async(path, file_encoding, on_done, time_budget_ms, na
   end)
 end
 
---- SKKサーバー（skkserv/dbskkd-cdb 等）への接続を設定する。個人辞書の次、
---- ローカル辞書ソースより先にマージされる（skkeleton 等の一般的な運用に
---- 合わせた優先順位）。
+--- SKKサーバー（skkserv/dbskkd-cdb/yaskkserv2 等）への接続を設定する。
+--- 個人辞書の次、ローカル辞書ソースより先にマージされる（skkeleton 等の
+--- 一般的な運用に合わせた優先順位）。
 --- nil を渡すと無効化する。
----@param opts { host: string, port: integer?, encoding: string?, timeout_ms: integer? }|nil
+---@param opts { host: string, port: integer?, encoding: string?, timeout_ms: integer?, debug: boolean? }|nil
 function M.set_skkserv(opts)
   skkserv.setup(opts)
+end
+
+--- SKKサーバーのバージョン文字列を取得する（疎通確認用）。
+--- lua/skk/dict/skkserv.lua の M.get_version() を参照。
+---@return string|nil
+function M.skkserv_version()
+  return skkserv.get_version()
+end
+
+--- 直近の SKKサーバー通信の結果（診断用）。
+--- "ok" | "not_configured" | "connect_failed" | "timeout" | "error"
+---@return string
+function M.skkserv_status()
+  return skkserv.last_status()
 end
 
 --- 個人辞書ファイルを読み込み、以降 lookup()/record_selection() で使う。

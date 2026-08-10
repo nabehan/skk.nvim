@@ -2,30 +2,22 @@
 vim.opt.runtimepath:append(vim.fn.getcwd())
 
 -- ===================================================================
--- 環境変数での動作確認オプション
+-- ここを編集して実機の構成に合わせる
 -- ===================================================================
--- 単一のメイン辞書（従来通り）:
---   SKK_JISYO_PATH=/usr/share/skk/SKK-JISYO.L
---   SKK_JISYO_ENCODING=euc-jp        (省略時 euc-jp)
---
--- 追加の辞書（複数可、":" 区切り。SKK_JISYO_PATH と併用できる。
--- 実機の skkeleton globalDictionaries 相当）:
---   SKK_JISYO_PATHS=/usr/local/share/skk/SKK-JISYO.edict2:/usr/local/share/skk/SKK-JISYO.emoji
---   SKK_JISYO_PATHS_ENCODING=utf-8   (省略時 utf-8。SKK_JISYO_PATHS の全ファイルに一律適用)
---
--- SKKサーバー（skkserv/dbskkd-cdb/yaskkserv2 等）:
---   SKK_SKKSERV_HOST=127.0.0.1
---   SKK_SKKSERV_PORT=1178            (省略時 1178)
---   SKK_SKKSERV_ENCODING=euc-jp      (省略時 euc-jp)
---
--- 例（実機の skkeleton 設定と同等の構成で試す場合）:
---   SKK_SKKSERV_HOST=127.0.0.1 \
---   SKK_JISYO_PATHS=/usr/local/share/skk/SKK-JISYO.edict2:/usr/local/share/skk/SKK-JISYO.emoji:/usr/local/share/skk/SKK-JISYO.emoji-ja \
---   SKK_JISYO_PATHS_ENCODING=utf-8 \
---   nvim -u ./skk_test_init.lua
 
 local setup_opts = {
-  skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" },
+  -- SKKサーバー（skkserv/dbskkd-cdb/yaskkserv2 等）。使わないなら nil にする。
+  -- 【yaskkserv2 で候補が引けない場合】まず encoding = "utf-8" を試す。
+  -- yaskkserv2 のような比較的新しいサーバーは EUC-JP ではなく UTF-8 が
+  -- デフォルトのことがある。debug = true にすると、送受信の生データが
+  -- vim.notify() で見えるので、通信自体はできているか（timeout/connect_failed
+  -- ではないか）、返ってきた文字列が化けていないか、を切り分けられる。
+  skkserv = {
+    host = "127.0.0.1",
+    port = 1178,
+    encoding = "euc-jp", -- yaskkserv2 なら "utf-8" も試す
+    debug = true,
+  },
 
   enter_key = "<C-j>",
   -- 半角英数/全角英数 -> ひらがな。henkan 中は <CR> 相当（確定）。省略時 "<C-j>"
@@ -57,67 +49,74 @@ local setup_opts = {
   user_dictionary = vim.fn.getcwd() .. "/SKK-JISYO.user",
 }
 
-local skkserv_host = os.getenv("SKK_SKKSERV_HOST")
-if skkserv_host then
-  setup_opts.skkserv = {
-    host = skkserv_host,
-    port = tonumber(os.getenv("SKK_SKKSERV_PORT")) or 1178,
-    encoding = os.getenv("SKK_SKKSERV_ENCODING") or "euc-jp",
-  }
+-- 読み込む辞書ファイル。上から順に優先順位が高い（先に登録したものが
+-- 優先され、word が重複する候補は後のファイルの分は無視される）。
+-- 実機の skkeleton globalDictionaries 相当。空にすると、下の組み込みの
+-- 小さな確認用辞書が使われる。
+---@type { path: string, encoding: string }[]
+local dictionaries = {
+  { path = "/usr/local/share/skk/SKK-JISYO.LL.utf8", encoding = "utf-8" },
+  { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
+  { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
+  { path = "/usr/local/share/skk/SKK-JISYO.emoji-ja", encoding = "utf-8" },
+}
+
+-- ===================================================================
+-- 環境変数でも上書きできる（ファイルを編集したくない場合）
+-- ===================================================================
+--   SKK_SKKSERV_HOST=... / SKK_SKKSERV_PORT=... / SKK_SKKSERV_ENCODING=...
+--     -> setup_opts.skkserv を上書き（SKK_SKKSERV_HOST が空なら skkserv 無効）
+--   SKK_JISYO_PATH=... / SKK_JISYO_ENCODING=...
+--     -> dictionaries の先頭に1件追加
+--   SKK_JISYO_PATHS=path1:path2:...  / SKK_JISYO_PATHS_ENCODING=...
+--     -> dictionaries に追加（":" 区切り）
+
+do
+  local env_host = os.getenv("SKK_SKKSERV_HOST")
+  if env_host then
+    setup_opts.skkserv = {
+      host = env_host,
+      port = tonumber(os.getenv("SKK_SKKSERV_PORT")) or 1178,
+      encoding = os.getenv("SKK_SKKSERV_ENCODING") or "euc-jp",
+      debug = os.getenv("SKK_SKKSERV_DEBUG") == "1",
+    }
+  end
+
+  local env_path = os.getenv("SKK_JISYO_PATH")
+  if env_path then
+    table.insert(dictionaries, { path = env_path, encoding = os.getenv("SKK_JISYO_ENCODING") or "euc-jp" })
+  end
+
+  local env_paths = os.getenv("SKK_JISYO_PATHS")
+  if env_paths then
+    local enc = os.getenv("SKK_JISYO_PATHS_ENCODING") or "utf-8"
+    for path in env_paths:gmatch("[^:]+") do
+      table.insert(dictionaries, { path = path, encoding = enc })
+    end
+  end
 end
 
 require("skk").setup(setup_opts)
 
-local dict = require("skk.dict")
-dict.load_dictionary_async("SKK-JISYO.L", "euc-jp")
-dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.edict2", "utf-8")
-dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.emoji", "utf-8")
-dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.emoji-ja", "utf-8")
-
 -- ===================================================================
--- 動作確認用の辞書読み込み
+-- 辞書の読み込み（上の dictionaries テーブルに基づく）
 -- ===================================================================
 local dict = require("skk.dict")
 local parser = require("skk.dict.jisyo_parser")
 
-local jisyo_path = os.getenv("SKK_JISYO_PATH")
-local jisyo_paths_raw = os.getenv("SKK_JISYO_PATHS")
-local jisyo_paths_encoding = os.getenv("SKK_JISYO_PATHS_ENCODING") or "utf-8"
-
-local pending = 0
-local any_requested = false
-
-local function notify_done(label, ok, err)
-  vim.schedule(function()
-    if ok then
-      vim.notify("skk.nvim: dictionary loaded: " .. label)
-    else
-      vim.notify("skk.nvim: failed to load " .. label .. ": " .. tostring(err), vim.log.levels.WARN)
-    end
-  end)
-end
-
-if jisyo_path then
-  any_requested = true
-  pending = pending + 1
-  dict.add_dictionary_async(jisyo_path, os.getenv("SKK_JISYO_ENCODING"), function(ok, err)
-    notify_done(jisyo_path, ok, err)
-    pending = pending - 1
-  end, nil, jisyo_path)
-end
-
-if jisyo_paths_raw then
-  for path in jisyo_paths_raw:gmatch("[^:]+") do
-    any_requested = true
-    pending = pending + 1
-    dict.add_dictionary_async(path, jisyo_paths_encoding, function(ok, err)
-      notify_done(path, ok, err)
-      pending = pending - 1
-    end, nil, path)
+if #dictionaries > 0 then
+  for _, entry in ipairs(dictionaries) do
+    dict.add_dictionary_async(entry.path, entry.encoding, function(ok, err)
+      vim.schedule(function()
+        if ok then
+          vim.notify("skk.nvim: dictionary loaded: " .. entry.path)
+        else
+          vim.notify("skk.nvim: failed to load " .. entry.path .. ": " .. tostring(err), vim.log.levels.WARN)
+        end
+      end)
+    end, nil, entry.path)
   end
-end
-
-if not any_requested then
+else
   -- 動作確認用の小さな組み込み辞書（送りなし・送りあり両方のサンプルを含む）
   local mini_jisyo = table.concat({
     ";; okuri-ari entries.",
@@ -132,8 +131,26 @@ if not any_requested then
   dict.set_dict(parser.parse(mini_jisyo))
   vim.schedule(function()
     vim.notify(
-      "skk.nvim: using built-in mini dictionary "
-        .. "(SKK_JISYO_PATH / SKK_JISYO_PATHS で実際の辞書ファイルを指定できます)"
+      "skk.nvim: using built-in mini dictionary (skk_test_init.lua の dictionaries を編集してください)"
     )
+  end)
+end
+
+-- SKKサーバーの疎通確認（設定されていれば、バージョン文字列を表示する）。
+if setup_opts.skkserv then
+  vim.schedule(function()
+    local version = dict.skkserv_version()
+    if version then
+      vim.notify("skk.nvim: skkserv version: " .. version)
+    else
+      vim.notify(
+        "skk.nvim: skkserv に接続できませんでした ("
+          .. setup_opts.skkserv.host
+          .. ":"
+          .. setup_opts.skkserv.port
+          .. ")。ホスト/ポート、サーバーの起動状態を確認してください。",
+        vim.log.levels.WARN
+      )
+    end
   end)
 end
