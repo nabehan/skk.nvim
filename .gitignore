@@ -2,6 +2,7 @@
 *.swp
 /.tests/
 /.luarc.json
+/bkup/
 test.log
 prompt.md
 SKK-JISYO.user
