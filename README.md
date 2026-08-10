@@ -2,7 +2,7 @@
 
 Neovim 専用（Vim 非対応）、denops/外部プロセスに依存しない、Lua だけで実装する SKK（日本語入力）プラグイン。
 
-**現在ステータス:** ローマ字→かな/カタカナ変換・4モード切替（切替時はカーソル位置にモードインジケーターを表示）に加えて、辞書変換（`▽`/`▼`、送りあり/送りなし/abbrev）・候補選択ウィンドウ（`<C-n>`/`<C-p>`フォーカス移動対応）・Sticky-shift・個人辞書（学習）に対応。大きな辞書ファイルは非同期・遅延パースで読み込む。複数辞書のマージ、skkserv 連携は未実装。
+**現在ステータス:** ローマ字→かな/カタカナ変換・4モード切替（切替時はカーソル位置にモードインジケーターを表示）に加えて、辞書変換（`▽`/`▼`、送りあり/送りなし/abbrev）・候補選択ウィンドウ（`<C-n>`/`<C-p>`フォーカス移動対応）・Sticky-shift・個人辞書（学習）・複数辞書のマージ・SKKサーバー連携に対応。大きな辞書ファイルは非同期・遅延パースで読み込む。
 
 ## Design goals
 
@@ -100,6 +100,12 @@ lua/skk/
   2. 実際の候補パースは、そのreadingが検索（lookup）された瞬間に初めて行い、結果をメモ化する。巨大な辞書でも実際に引かれるreadingは全体のごく一部なので、体感の起動負荷をさらに減らせる。
 
 実測（17MB・52万行、この開発環境の Lua 5.4）では、同期の全件パースが約4秒かかっていたのに対し、非同期・遅延パースは約2.1秒で完了し、かつその間 Neovim は固まらない。実際の Neovim は LuaJIT で動く（この開発環境の Lua 5.4 より一般に高速）ため、実機ではさらに短くなる見込み。denops のような外部プロセスを使う実装（例: skkeleton）に比べると、単一スレッドでの協調的なスケジューリングである以上、体感の「瞬間起動」には及ばない可能性がある。`vim.uv.new_work()`（libuv スレッドプールを使った真の並列パース）でさらに縮められる可能性はあるが、ワーカースレッドはクロージャや `vim.*` にアクセスできない等の制約があり、実機での検証を重ねながら慎重に進める必要がある（未着手）。
+
+**複数辞書**は `dict.add_dict(dict, name)`（同期）/ `dict.add_dictionary_async(path, encoding, on_done, time_budget_ms, name)`（非同期・遅延パース）で追加登録できる。優先順位は登録順（先に追加したソースの候補が優先され、`word` が重複する候補は後から追加したソース側は無視される）。`dict.set_dict()`/`dict.load_dictionary_async()` は逆に「唯一のソースとして置き換える」動作なので、複数辞書を使う場合は `add_dict`/`add_dictionary_async` を使う。`dict.clear_dicts()` で登録済みのローカル辞書ソースを全て消せる（個人辞書・SKKサーバーの設定は影響を受けない）。
+
+**SKKサーバー**（`dict/skkserv.lua`）は伝統的な SKK server protocol（`skkserv`/`dbskkd-cdb`/`yaskkserv2` 等）への TCP クライアント。`require("skk").setup({ skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" } })` で有効化する。`henkan/state.lua` からの検索は同期APIとして呼ばれるため、内部では非同期TCP通信を `vim.wait()` でポーリングして待つラッパーになっており、サーバーが応答しない場合は `timeout_ms`（デフォルト300ms）で諦めて空配列を返す（Neovim がフリーズしないようにするため）。接続に失敗した場合は5秒間再試行しない（クールダウン）。プロトコルの細部はこのリポジトリ同梱の簡易テストサーバー（`tests/fixtures/fake_skkserv.py`）で検証した範囲に限られるため、実際のサーバーでの動作確認を推奨する。
+
+**マージの優先順位**は 個人辞書 > SKKサーバー（有効時） > ローカル辞書ソース（登録順）。`word` が重複する候補は優先順位の高い方だけが残る。
 
 候補が見つからない場合は、画面に表示していた読み（+送り仮名）をそのままプレーンテキストで確定する（本家 SKK のシームレスな単語登録相当の機能は今後実装予定）。
 
@@ -205,6 +211,22 @@ if parsed then
   dict.set_dict(parsed)
 end
 ```
+
+複数の辞書ファイルや SKKサーバーを併用する場合（`skkeleton` の `globalDictionaries`/`skk_server` に相当する構成）:
+
+```lua
+require("skk").setup({
+  skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" },
+  -- ...他のオプション
+})
+
+local dict = require("skk.dict")
+dict.load_dictionary_async("/usr/share/skk/SKK-JISYO.L", "euc-jp") -- メイン辞書
+dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.edict2", "utf-8")
+dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.emoji", "utf-8")
+```
+
+`skk_test_init.lua` は環境変数 `SKK_SKKSERV_HOST`/`SKK_JISYO_PATHS`（`:` 区切り）/`SKK_JISYO_PATHS_ENCODING` で、この構成をそのまま試せるようにしてある（ファイル冒頭のコメント参照）。
 
 ## 開発時の動作確認
 

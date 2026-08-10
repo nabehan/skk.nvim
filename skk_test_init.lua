@@ -49,6 +49,8 @@ local setup_opts = {
     -- 省略時のデフォルト。1にすると、これまで通り最初の<SPC>で即ウィンドウ表示
   },
 
+  skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" },
+
   -- 実装試験中は、個人辞書をこのリポジトリ直下（README.md と同じ階層）に
   -- 作る。本番の既定値は "~/.local/share/skk/SKK-JISYO.user"
   -- （lua/skk/init.lua 参照）。
