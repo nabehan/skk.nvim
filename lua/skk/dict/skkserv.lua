@@ -103,6 +103,11 @@ function M.is_enabled()
   return config ~= nil
 end
 
+--- 直近の接続失敗の詳細（診断用。ECONNREFUSED 等の libuv エラー文字列、
+--- または getaddrinfo に失敗した場合はその内容）。
+---@type string|nil
+local last_connect_error = nil
+
 --- "1.2.3.4" 形式の文字列かどうか（雑な判定でよい。違えば getaddrinfo で
 --- 名前解決する）。
 ---@param host string
@@ -116,23 +121,41 @@ end
 local function connect_to_ip(ip, on_ready)
   local sock = uv.new_tcp()
   local done = false
-  sock:connect(ip, config.port, function(err)
-    if done then
-      return
-    end
+  local ok_connect_call, connect_err = pcall(function()
+    sock:connect(ip, config.port, function(err)
+      if done then
+        return
+      end
+      done = true
+      connecting = false
+      if err then
+        last_connect_error = err
+        debug_notify("connect error:", err)
+        pcall(function()
+          sock:close()
+        end)
+        last_connect_failure = uv.now()
+        on_ready(false)
+        return
+      end
+      client = sock
+      on_ready(true)
+    end)
+  end)
+  if not ok_connect_call then
     done = true
     connecting = false
-    if err then
-      pcall(function()
-        sock:close()
-      end)
-      last_connect_failure = uv.now()
-      on_ready(false)
-      return
-    end
-    client = sock
-    on_ready(true)
-  end)
+    last_connect_error = tostring(connect_err)
+    debug_notify("connect() call failed:", connect_err)
+    last_connect_failure = uv.now()
+    on_ready(false)
+  end
+end
+
+--- 直近の接続失敗の詳細（診断用）。接続に一度も失敗していなければ nil。
+---@return string|nil
+function M.last_connect_error()
+  return last_connect_error
 end
 
 ---@param on_ready fun(ok: boolean)
@@ -142,6 +165,7 @@ local function ensure_connected(on_ready)
     return
   end
   if connecting then
+    debug_notify("already connecting, skip")
     on_ready(false)
     return
   end
@@ -149,6 +173,7 @@ local function ensure_connected(on_ready)
     -- 直近で接続に失敗したばかりなので、クールダウン中は再試行しない
     -- （サーバーが落ちているたびに毎回タイムアウト待ちすると henkan の
     -- 反応が悪くなるため）。
+    debug_notify("in reconnect cooldown, skip (last error:", last_connect_error, ")")
     on_ready(false)
     return
   end
@@ -156,14 +181,18 @@ local function ensure_connected(on_ready)
   connecting = true
 
   if looks_like_ipv4(config.host) then
+    debug_notify("connecting to", config.host .. ":" .. config.port)
     connect_to_ip(config.host, on_ready)
     return
   end
 
+  debug_notify("resolving hostname", config.host)
   uv.getaddrinfo(config.host, nil, { family = "inet" }, function(err, res)
     if err or not res or not res[1] then
       connecting = false
+      last_connect_error = err or "getaddrinfo: no result"
       last_connect_failure = uv.now()
+      debug_notify("getaddrinfo failed:", last_connect_error)
       vim.schedule(function()
         on_ready(false)
       end)

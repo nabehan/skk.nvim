@@ -16,7 +16,7 @@ local setup_opts = {
     host = "127.0.0.1",
     port = 1178,
     encoding = "euc-jp", -- yaskkserv2 なら "utf-8" も試す
-    debug = true,
+    debug = false,
   },
 
   enter_key = "<C-j>",
@@ -55,7 +55,7 @@ local setup_opts = {
 -- 小さな確認用辞書が使われる。
 ---@type { path: string, encoding: string }[]
 local dictionaries = {
-  { path = "/usr/local/share/skk/SKK-JISYO.LL.utf8", encoding = "utf-8" },
+  { path = "/usr/share/skk/SKK-JISYO.L", encoding = "euc-jp" },
   { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
   { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
   { path = "/usr/local/share/skk/SKK-JISYO.emoji-ja", encoding = "utf-8" },

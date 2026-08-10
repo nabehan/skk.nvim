@@ -145,20 +145,41 @@ function M.load_dictionary_async(path, file_encoding, on_done, time_budget_ms)
 end
 
 --- 辞書ファイルを非同期・遅延パースで読み込み、既存のソースに追加する形で
---- 登録する（優先順位は登録順）。詳しい非同期化の説明は
---- M.load_dictionary_async() のコメントを参照。
+--- 登録する（優先順位は M.add_dictionary_async() を*呼んだ*順。読み込みが
+--- 完了した順ではない）。
+---
+--- 【重要】優先順位を「呼んだ順」で確定させるため、実際のパース結果が
+--- まだ届いていなくても、呼ばれた時点で sources 内に「その位置」を
+--- 即座に確保しておく（最初は常に空を返すプレースホルダ）。そうしないと、
+--- 例えば小さい辞書（emoji等）が大きい辞書（SKK-JISYO.L）より先に
+--- 読み込み終わった場合に、呼び出し順ではなく完了順が優先順位になって
+--- しまう不具合になる（実際に報告のあった問題）。
+---
+--- 詳しい非同期化の説明は M.load_dictionary_async() のコメントを参照。
 ---@param path string
 ---@param file_encoding string|nil ファイルの文字コード（省略時は "euc-jp"）
 ---@param on_done fun(ok: boolean, err: string|nil)|nil 完了時に呼ばれるコールバック（省略可）
 ---@param time_budget_ms number|nil jisyo_parser.build_raw_index_async() に渡す、1チックあたりの目安処理時間（ミリ秒）
 ---@param name string|nil ソース名（省略時はファイルパス）
 function M.add_dictionary_async(path, file_encoding, on_done, time_budget_ms, name)
+  local source_name = name or path
+  local slot_index = #sources + 1
+  sources[slot_index] = {
+    name = source_name,
+    lookup = function()
+      return {} -- 読み込み中（またはこの後失敗した場合）は常に空
+    end,
+  }
+
   load_index_async(path, file_encoding, time_budget_ms, function(index)
-    table.insert(sources, make_raw_index_source(name or path, index))
+    -- 読み込み中に他のソースが増減していても、確保しておいた位置に
+    -- そのまま差し替える（優先順位を維持する）。
+    sources[slot_index] = make_raw_index_source(source_name, index)
     if on_done then
       on_done(true, nil)
     end
   end, function(err)
+    -- 失敗時はプレースホルダ（常に空を返す）のままにしておく。
     if on_done then
       on_done(false, err)
     end
@@ -186,6 +207,13 @@ end
 ---@return string
 function M.skkserv_status()
   return skkserv.last_status()
+end
+
+--- 直近の接続失敗の詳細（診断用。ECONNREFUSED 等）。接続に一度も
+--- 失敗していなければ nil。
+---@return string|nil
+function M.skkserv_last_connect_error()
+  return skkserv.last_connect_error()
 end
 
 --- 個人辞書ファイルを読み込み、以降 lookup()/record_selection() で使う。
