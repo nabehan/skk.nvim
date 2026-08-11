@@ -332,6 +332,7 @@ end
 ---@return string|nil version サーバーが応答しなければ nil
 function M.get_version()
   if not config then
+    last_status = "not_configured"
     return nil
   end
 
@@ -346,6 +347,7 @@ function M.get_version()
       return
     end
     local chunks = {}
+    debug_notify("send:", "2")
     pcall(function()
       client:read_start(function(err, chunk)
         if err or not chunk then
@@ -372,9 +374,18 @@ function M.get_version()
     return done
   end, 5)
 
-  if connect_ok == false or not response then
+  if connect_ok == false then
+    last_status = "connect_failed"
     return nil
   end
+  if not response then
+    last_status = "timeout"
+    debug_notify("timeout waiting for version response (timeout_ms=" .. config.timeout_ms .. ")")
+    return nil
+  end
+
+  debug_notify("recv:", response:gsub("\n$", ""))
+  last_status = "ok"
   return (response:gsub("\n$", ""))
 end
 

@@ -55,10 +55,10 @@ local setup_opts = {
 -- 小さな確認用辞書が使われる。
 ---@type { path: string, encoding: string }[]
 local dictionaries = {
-  { path = "/usr/share/skk/SKK-JISYO.L", encoding = "euc-jp" },
-  { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
-  { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
-  { path = "/usr/local/share/skk/SKK-JISYO.emoji-ja", encoding = "utf-8" },
+  -- { path = "/usr/share/skk/SKK-JISYO.L", encoding = "euc-jp" },
+  -- { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
+  -- { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
+  -- { path = "/usr/local/share/skk/SKK-JISYO.emoji-ja", encoding = "utf-8" },
 }
 
 -- ===================================================================
@@ -143,12 +143,16 @@ if setup_opts.skkserv then
     if version then
       vim.notify("skk.nvim: skkserv version: " .. version)
     else
+      local detail = dict.skkserv_last_connect_error()
       vim.notify(
         "skk.nvim: skkserv に接続できませんでした ("
           .. setup_opts.skkserv.host
           .. ":"
           .. setup_opts.skkserv.port
-          .. ")。ホスト/ポート、サーバーの起動状態を確認してください。",
+          .. ")。status="
+          .. dict.skkserv_status()
+          .. (detail and (" error=" .. tostring(detail)) or "")
+          .. "。ホスト/ポート、サーバーの起動状態を確認してください。",
         vim.log.levels.WARN
       )
     end
