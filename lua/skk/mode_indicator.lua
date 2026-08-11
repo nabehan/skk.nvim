@@ -36,8 +36,21 @@ local function get_buf()
   return buf
 end
 
---- 現在のカーソル位置にモードインジケーターを表示する。
+--- 現在のカーソル位置（挿入モード）またはコマンドライン付近
+--- （コマンドラインモード）にモードインジケーターを表示する。
 --- 対応するグリフが無いモードが渡されたら何もしない。
+---
+--- 【コマンドラインモードでの位置について】
+--- nvim_open_win() の relative="cursor" は「現在のウィンドウのカーソル
+--- 位置」を基準にする（:help nvim_open_win() の relative フィールド参照）。
+--- コマンドラインモード中、この「現在のウィンドウ」はコマンドラインの
+--- ウィンドウではなく、コマンドラインに入る直前の通常ウィンドウのままで
+--- あり、そのカーソルはコマンドライン編集中ずっと固定されている。その
+--- ため relative="cursor" のままだと、カーソルが画面下端付近にある場合に
+--- コマンドライン行と重なり、コマンドラインの毎キー入力ごとの再描画で
+--- 即座に上書きされてしまい、実質的に「表示されない」状態になる
+--- （実機で報告された不具合）。コマンドラインモードでは代わりに
+--- relative="editor" でコマンドライン行の右端付近に固定表示する。
 ---@param mode SkkMode
 function M.show(mode)
   local glyph = M.GLYPHS[mode]
@@ -48,16 +61,31 @@ function M.show(mode)
   local b = get_buf()
   vim.api.nvim_buf_set_lines(b, 0, -1, false, { glyph })
 
-  local win_config = {
-    relative = "cursor",
-    row = 1,
-    col = 0,
-    width = 4, -- 全角グリフ2文字ぶん（"latn"のような半角4文字表記もこの幅に収まる）
-    height = 1,
-    style = "minimal",
-    border = "none",
-    focusable = false,
-  }
+  local win_config
+  if vim.api.nvim_get_mode().mode == "c" then
+    win_config = {
+      relative = "editor",
+      row = math.max(vim.o.lines - vim.o.cmdheight, 0),
+      col = math.max(vim.o.columns - 4, 0),
+      width = 4,
+      height = 1,
+      style = "minimal",
+      border = "none",
+      focusable = false,
+      zindex = 250, -- コマンドライン自体の描画より手前に出す
+    }
+  else
+    win_config = {
+      relative = "cursor",
+      row = 1,
+      col = 0,
+      width = 4, -- 全角グリフ2文字ぶん（"latn"のような半角4文字表記もこの幅に収まる）
+      height = 1,
+      style = "minimal",
+      border = "none",
+      focusable = false,
+    }
+  end
 
   if win and vim.api.nvim_win_is_valid(win) then
     vim.api.nvim_win_set_config(win, win_config)
