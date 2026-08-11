@@ -284,3 +284,4 @@ PLENARY_DIR=~/.local/share/nvim/lazy/plenary.nvim \
 - [vim-skk/skkeleton](https://github.com/vim-skk/skkeleton)
 - [uga-rosa/skk-learning.nvim](https://github.com/uga-rosa/skk-learning.nvim) — Lua での SKK 実装入門
 - [yuys13/skk-develop.nvim](https://github.com/yuys13/skk-develop.nvim) — SKK辞書ダウンローダー
+- [wachikun/yaskkserv2](https://github.com/wachikun/yaskkserv2) — skkserv 連携の実機動作確認に使用したSKKサーバー
