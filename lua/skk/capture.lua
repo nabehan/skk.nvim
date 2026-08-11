@@ -52,6 +52,7 @@ local kana_util = require("skk.kana_util")
 local mode_util = require("skk.mode")
 local henkan_state = require("skk.henkan.state")
 local mode_indicator = require("skk.mode_indicator")
+local target = require("skk.target")
 
 local M = {}
 
@@ -167,22 +168,12 @@ end
 
 --- 現在のカーソル位置の直前から `byte_len` バイトを削除し、
 --- 続けて `text` を挿入する。カーソルは挿入後のテキストの末尾に置く。
+--- 実際の書き込み先（挿入モードのバッファ / コマンドライン）の違いは
+--- lua/skk/target.lua が吸収する。
 ---@param byte_len integer
 ---@param text string
 local function replace_before_cursor(byte_len, text)
-  local win = vim.api.nvim_get_current_win()
-  local cursor = vim.api.nvim_win_get_cursor(win)
-  local row0 = cursor[1] - 1
-  local col = cursor[2]
-  local start_col = math.max(col - byte_len, 0)
-
-  if byte_len > 0 then
-    vim.api.nvim_buf_set_text(0, row0, start_col, row0, col, {})
-  end
-  if text ~= "" then
-    vim.api.nvim_buf_set_text(0, row0, start_col, row0, start_col, { text })
-  end
-  vim.api.nvim_win_set_cursor(win, { row0 + 1, start_col + #text })
+  target.replace_before_cursor(byte_len, text)
 end
 
 --- ローマ字入力を処理し、確定したかな（モードに応じてカタカナに
@@ -401,7 +392,13 @@ local function on_key(key, _typed)
     return -- 完全パススルー。<C-j> は init.lua 側のキーマップで処理する
   end
 
-  if vim.api.nvim_get_mode().mode ~= "i" then
+  -- 対応対象は挿入モード（バッファ）とコマンドラインモード。
+  -- 【現時点の制約】henkan（▽/▼、漢字変換）は extmark ベースの preedit
+  -- 表示（lua/skk/henkan/preedit.lua）に依存しており、コマンドラインには
+  -- extmark が存在しないためまだコマンドラインには対応していない。
+  -- ローマ字→かな変換・モード切替（l/q/L, <C-j>）はコマンドラインでも動く。
+  local target_kind = target.kind()
+  if target_kind == nil then
     return
   end
 
@@ -462,12 +459,14 @@ local function on_key(key, _typed)
     end
   end
 
-  if context.buffer == "" and is_midashi_trigger_key(key) then
+  -- henkan（▽/▼）・abbrev の開始は現時点ではバッファ（挿入モード）限定。
+  -- extmark ベースの preedit 表示に依存しているため（上の注釈を参照）。
+  if target_kind == "buffer" and context.buffer == "" and is_midashi_trigger_key(key) then
     henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
     return ""
   end
 
-  if context.buffer == "" and key == "/" then
+  if target_kind == "buffer" and context.buffer == "" and key == "/" then
     -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
     henkan_state.start_abbrev(context.mode)
     return ""

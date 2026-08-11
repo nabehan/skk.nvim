@@ -72,8 +72,10 @@ function M.setup(opts)
     vim.notify("skk.nvim: " .. capture.mode_label())
   end
 
-  vim.keymap.set("i", enter_key, function()
+  vim.keymap.set({ "i", "c" }, enter_key, function()
     -- henkan (▽/▼) がアクティブな間は、<C-j> も <CR> と同じ「確定」として扱う。
+    -- （現時点では henkan はバッファ限定なので、コマンドラインでは常に
+    -- capture.transition() 側のモード切替のみが働く）
     if henkan_state.is_active() then
       henkan_state.confirm()
       return
