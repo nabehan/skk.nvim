@@ -103,7 +103,15 @@ lua/skk/
 
 **複数辞書**は `dict.add_dict(dict, name)`（同期）/ `dict.add_dictionary_async(path, encoding, on_done, time_budget_ms, name)`（非同期・遅延パース）で追加登録できる。優先順位は登録順（先に追加したソースの候補が優先され、`word` が重複する候補は後から追加したソース側は無視される）。`dict.set_dict()`/`dict.load_dictionary_async()` は逆に「唯一のソースとして置き換える」動作なので、複数辞書を使う場合は `add_dict`/`add_dictionary_async` を使う。`dict.clear_dicts()` で登録済みのローカル辞書ソースを全て消せる（個人辞書・SKKサーバーの設定は影響を受けない）。
 
-**SKKサーバー**（`dict/skkserv.lua`）は伝統的な SKK server protocol（`skkserv`/`dbskkd-cdb`/`yaskkserv2` 等）への TCP クライアント。`require("skk").setup({ skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" } })` で有効化する。`henkan/state.lua` からの検索は同期APIとして呼ばれるため、内部では非同期TCP通信を `vim.wait()` でポーリングして待つラッパーになっており、サーバーが応答しない場合は `timeout_ms`（デフォルト300ms）で諦めて空配列を返す（Neovim がフリーズしないようにするため）。接続に失敗した場合は5秒間再試行しない（クールダウン）。プロトコルの細部はこのリポジトリ同梱の簡易テストサーバー（`tests/fixtures/fake_skkserv.py`）で検証した範囲に限られるため、実際のサーバーでの動作確認を推奨する。
+**SKKサーバー**（`dict/skkserv.lua`）は伝統的な SKK server protocol（`skkserv`/`dbskkd-cdb`/`yaskkserv2` 等）への TCP クライアント。`require("skk").setup({ skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" } })` で有効化する（実機の [yaskkserv2](https://github.com/wachikun/yaskkserv2) で疎通・変換とも動作確認済み）。
+
+プロトコルはコマンドごとに終端記号が異なる点に注意が必要（yaskkserv2 の README「SKK protocol memo」に詳しい）。実装を誤りやすく、実際にこの実装も最初は取り違えていた:
+
+- `"1"`（検索）: client → server は `"1" .. reading .. " "`（**スペース**終端。改行ではない）。server → client は `"1/候補1/候補2/.../\n"`（改行終端）、見つからなければ `"4" .. reading .. "\n"`。
+- `"2"`（バージョン確認）: client → server は `"2"` のみ（終端記号なし）。server → client は `"A.B "`（**スペース**終端。改行ではない）。
+- `"0"`（切断）: 終端記号なし、応答も無い。
+
+`henkan/state.lua` からの検索は同期APIとして呼ばれるため、内部では非同期TCP通信を `vim.wait()` でポーリングして待つラッパーになっており、サーバーが応答しない場合は `timeout_ms`（デフォルト300ms）で諦めて空配列を返す（Neovim がフリーズしないようにするため）。接続に失敗した場合は5秒間再試行しない（クールダウン）。`debug = true` を設定すると送受信の生データを `vim.notify()` で出力できる（接続確認には `dict.skkserv_version()`/`dict.skkserv_status()`/`dict.skkserv_last_connect_error()` も使える）。プロトコル実装はこのリポジトリ同梱の簡易テストサーバー（`tests/fixtures/fake_skkserv.py`）と実機の yaskkserv2 の両方で検証済み。他のサーバー実装（`dbskkd-cdb` 等）は未検証。
 
 **マージの優先順位**は 個人辞書 > SKKサーバー（有効時） > ローカル辞書ソース（登録順）。`word` が重複する候補は優先順位の高い方だけが残る。
 
@@ -154,7 +162,7 @@ lua/skk/
 
 ## 既知の制限
 
-- 複数辞書のマージ・skkserv（辞書サーバー）連携は未実装。単一のメイン辞書（`dict.set_dict()`/`dict.load_dictionary_async()`）+ 個人辞書のみ対応。
+- 複数辞書のマージ・SKKサーバー連携は実装済み（`dict.add_dict()`/`dict.add_dictionary_async()`/`require("skk").setup({ skkserv = {...} })`）。実機の yaskkserv2 での動作確認済み。他の skkserv 実装（`dbskkd-cdb` 等）は未検証。
 - 単語登録（候補が見つからなかった読みをその場で辞書に追加する、本家 SKK のシームレスな新規登録相当の機能）は未実装。候補が見つからない場合は読み（+送り仮名）をプレーンテキストとして確定するだけ。
 - 通常のバッファ（挿入モード）でのみ有効。コマンドラインモード（`c`）・検索モード・内蔵ターミナル（`t`）は未対応。コマンドラインは `vim.fn.getcmdline()`/`setcmdline()` を使えば技術的には対応できそうだが、内蔵ターミナルはバッファへの直接書き込みができず `chansend()` でPTYにバイト列を送る形になり、実装難易度が上がる。
 - `<Left>`/`<Right>` などのカーソル移動キーやマウスクリックは、henkan 非アクティブ時の未確定ローマ字バッファについては安全に扱える（`is_target_key` に該当しないキーが来た時点でバッファを無条件にリセットするため、確定済みかなを破壊するようなバイト列破損は起こらない）が、**表示上の不整合**（未確定ローマ字がそのまま残る）は起こりうる。henkan（▽/▼）アクティブ中にこれらのキーが来た場合の挙動は未検証。
@@ -264,7 +272,7 @@ PLENARY_DIR=~/.local/share/nvim/lazy/plenary.nvim \
 6. ~~候補選択ウィンドウ（複数候補の一覧表示・ページング）~~ ✅
 7. ~~Sticky-shift~~ ✅
 8. ~~個人辞書・学習（recency-based の並び替え）~~ ✅
-9. 複数辞書のマージ・skkserv 連携
+9. ~~複数辞書のマージ・skkserv 連携~~ ✅
 10. 単語登録（候補が見つからない読みをその場で辞書に追加する）
 11. blink.cmp ネイティブソースとしての統合
 12. ~~周辺 UI（モードインジケーター）~~ ✅（カーソル位置への一時表示のみ。モードライン表示は未着手）

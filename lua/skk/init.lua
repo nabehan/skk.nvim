@@ -33,11 +33,12 @@ local M = {}
 ---@field user_dictionary string? 個人辞書（学習結果）ファイルのパス。文字コードは常にUTF-8固定
 ---  （skkeleton の userDictionary の慣習に合わせている）。ファイルが無ければ自動的に作られる。
 ---  デフォルト "~/.local/share/skk/SKK-JISYO.user"（skkeleton と同じ慣習のパス）。
----@field skkserv { host: string, port: integer?, encoding: string?, timeout_ms: integer? }? SKKサーバー
----  （skkserv/dbskkd-cdb 等）への接続設定。省略時は無効（skkserv を使わない）。
+---@field skkserv { host: string, port: integer?, encoding: string?, timeout_ms: integer?, debug: boolean? }? SKKサーバー
+---  （skkserv/dbskkd-cdb/yaskkserv2 等）への接続設定。省略時は無効（skkserv を使わない）。
 ---  host は必須。port は省略時 1178。encoding は省略時 "euc-jp"（サーバーとの通信に使う
 ---  文字コード。伝統的な skkserv は EUC-JP が主流）。timeout_ms は1回の検索の待ち時間上限
----  （省略時 300）。個人辞書の次、ローカル辞書より先にマージされる。
+---  （省略時 300）。debug は送受信の生データを vim.notify() で出力するか（省略時 false）。
+---  個人辞書の次、ローカル辞書より先にマージされる。
 
 --- ▽/▼ 表示用のハイライトグループのデフォルトを定義する。
 --- 既にユーザーやカラースキームが定義済みなら上書きしない (default = true)。
