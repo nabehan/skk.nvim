@@ -3,20 +3,27 @@
 -- SKKサーバー（skkserv/dbskkd-cdb/yaskkserv2 等、伝統的な SKK server
 -- protocol を話すサーバー）への TCP クライアント。
 --
--- 【プロトコル（実装した範囲）】
---   検索リクエスト: "1" .. reading .. "\n"（reading はサーバーの
---     エンコーディング、伝統的には EUC-JP、で送る。ただし yaskkserv2 の
---     ような比較的新しいサーバーは UTF-8 がデフォルトのことがあるので、
---     `encoding = "utf-8"` を試す価値がある。設定は setup() で行う）
---   検索成功レスポンス: "1/候補1/候補2/.../\n"
---   検索失敗レスポンス: "4" .. reading .. "\n"（reading をそのまま返す）
---   バージョン確認: "2\n" -> バージョン文字列
--- 【注意】プロトコルの細部（サーバー実装によって微妙な差異が起こりうる）
--- は tests/fixtures/fake_skkserv.py という自作の簡易サーバーで検証した
--- 範囲に限られる。実際の skkserv/dbskkd-cdb/yaskkserv2 での動作確認が
--- 必要。`debug = true` を設定すると、送受信の生データを vim.notify() で
--- 出力できる（接続はできるのに変換されない、という場合の切り分け用。
--- 典型的な原因はエンコーディングの不一致）。
+-- 【プロトコル】yaskkserv2 の README（"SKK protocol memo" セクション。
+-- skkserv/README, skkserv/skkserv.c 等を出典とする）に基づく。
+-- コマンドごとに終端記号が異なる点に注意（実装時に見落としやすく、
+-- 実際にこの実装も最初は "1"/"2" とも "\n" 終端だと誤解して書いており、
+-- 自作のテスト用フェイクサーバーも同じ誤解で書いていたためテストでは
+-- 発覚しなかった）。
+--
+--   "1" (検索):    client -> server は "1" .. reading .. " "（スペース終端。
+--                  改行ではない）。
+--                  成功時 server -> client は "1/候補1/候補2/.../\n"（改行終端）。
+--                  失敗時は "4" .. reading .. "\n"（先頭の "1" を "4" に
+--                  変えて改行付きで返す）。
+--   "2" (バージョン確認): client -> server は "2" のみ（終端記号なし）。
+--                  server -> client は "A.B "（スペース終端。改行ではない）。
+--   "3" (ホスト名):  "2" と同じ終端規則（未実装のサーバーも多い。
+--                  yaskkserv2 もダミー文字列を返すのみ）。
+--   "0" (切断):    終端記号なし。応答も無い。
+--
+-- reading はサーバーのエンコーディング（伝統的には EUC-JP）で送る。
+-- `debug = true` を設定すると、送受信の生データを vim.notify() で
+-- 出力できる（接続はできるのに変換されない、という場合の切り分け用）。
 --
 -- dict.lookup() は henkan/state.lua から同期APIとして呼ばれるため、
 -- 内部では非同期TCP通信を vim.wait() でポーリングして待つラッパーに
@@ -296,9 +303,11 @@ function M.lookup(reading, has_okuri)
       return
     end
 
-    debug_notify("send:", "1" .. query)
+    debug_notify("send:", "1" .. query .. "<SP>")
     local ok_write = pcall(function()
-      client:write("1" .. query .. "\n")
+      -- 【重要】"1" コマンドのリクエストはスペース終端（改行ではない）。
+      -- yaskkserv2 の README「SKK protocol memo」参照。
+      client:write("1" .. query .. " ")
     end)
     if not ok_write then
       done = true
@@ -347,7 +356,7 @@ function M.get_version()
       return
     end
     local chunks = {}
-    debug_notify("send:", "2")
+    debug_notify("send:", "2 (no terminator)")
     pcall(function()
       client:read_start(function(err, chunk)
         if err or not chunk then
@@ -356,7 +365,9 @@ function M.get_version()
         end
         table.insert(chunks, chunk)
         local full = table.concat(chunks)
-        if full:find("\n", 1, true) then
+        -- 【重要】"2" コマンドのレスポンスはスペース終端（改行ではない）。
+        -- yaskkserv2 の README「SKK protocol memo」参照。
+        if full:find(" ", 1, true) then
           pcall(function()
             client:read_stop()
           end)
@@ -366,7 +377,8 @@ function M.get_version()
       end)
     end)
     pcall(function()
-      client:write("2\n")
+      -- 【重要】"2" コマンドのリクエストは終端記号なし（改行すら不要）。
+      client:write("2")
     end)
   end)
 
@@ -384,9 +396,9 @@ function M.get_version()
     return nil
   end
 
-  debug_notify("recv:", response:gsub("\n$", ""))
+  debug_notify("recv:", response)
   last_status = "ok"
-  return (response:gsub("\n$", ""))
+  return (response:gsub("%s+$", ""))
 end
 
 return M

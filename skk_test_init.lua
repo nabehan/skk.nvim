@@ -56,9 +56,23 @@ local setup_opts = {
 ---@type { path: string, encoding: string }[]
 local dictionaries = {
   -- { path = "/usr/share/skk/SKK-JISYO.L", encoding = "euc-jp" },
-  -- { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
-  -- { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
-  -- { path = "/usr/local/share/skk/SKK-JISYO.emoji-ja", encoding = "utf-8" },
+  -- { path = "/usr/share/skk/SKK-JISYO.mazegaki", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.requested", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.pubdic+", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.law", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.assoc", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.propernoun", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.station", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.geo", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.fullname", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.JIS2", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.itaiji", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.okinawa", encoding = "euc-jp" },
+  -- { path = "/usr/share/skk/SKK-JISYO.china_taiwan", encoding = "euc-jp" },
+  -- { path = "/usr/local/share/skk/SKK-JISYO.LL.utf8", encoding = "utf-8" },
+  { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
+  { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
+  { path = "/usr/local/share/skk/SKK-JISYO.emoji-ja", encoding = "utf-8" },
 }
 
 -- ===================================================================
