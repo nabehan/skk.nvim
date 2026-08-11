@@ -62,11 +62,20 @@ local ns_id = nil
 --- lua/skk/init.lua の M.setup() から差し込まれるオプション。
 --- モジュールのトップレベルでは vim.* に触れないプレーンな値のみ
 --- 保持する（この設計方針は他のモジュールと同様）。
----@type { sticky_shift_enabled: boolean, sticky_shift_key: string, egg_like_newline: boolean }
+---@type { sticky_shift_enabled: boolean, sticky_shift_key: string, egg_like_newline: boolean, cmdline_start_mode: SkkMode }
 local config = {
   sticky_shift_enabled = true,
   sticky_shift_key = ";",
   egg_like_newline = true,
+  -- コマンドラインモードに入った瞬間の入力モード。バッファ側で直前に
+  -- 何のモードを使っていたかに関わらず、常にこの値から始める（バッファの
+  -- モードとコマンドラインのモードは独立に管理する。下記の
+  -- setup_cmdline_mode_isolation() を参照）。デフォルトは半角英数
+  -- （SKK実質OFF）。ddskk/skkeleton 等でも一般的な既定動作。
+  -- 将来、コマンドライン上でのシームレスな単語登録（henkan）に対応する際、
+  -- ここを "hira" 等に変えたい場面が出てくる可能性を見込んで設定項目にして
+  -- ある（現時点では setup() からは未公開、コード上のデフォルト変更のみ）。
+  cmdline_start_mode = "ascii",
 }
 
 -- 制御キーの raw keycode。vim.api.nvim_replace_termcodes は使わない
@@ -498,6 +507,36 @@ local function on_key(key, _typed)
   return ""
 end
 
+--- コマンドラインモードに入る直前のバッファ側の入力モードを退避しておく変数。
+--- コマンドラインを抜けたときに、コマンドライン中に何のモードを使っていたかに
+--- 関わらずこの値へ復元する（バッファのモードとコマンドラインのモードを
+--- 独立に保つ）。
+---@type SkkMode|nil
+local saved_buffer_mode = nil
+
+--- コマンドラインモードに入った/出た瞬間の処理。
+--- 【なぜ必要か】context.mode は capture.lua 内で単一の値として管理して
+--- おり、バッファとコマンドラインで自動的には分離されない。何もしないと
+--- 「コマンドラインに入っても直前のバッファのモードのまま」
+--- 「コマンドラインで最後に使ったモードがバッファ側に漏れて残る」という
+--- 2つの問題が起きる（実機で報告された不具合）。CmdlineEnter/CmdlineLeave
+--- でモードを退避・復元することでこれを防ぐ。
+local function on_cmdline_enter()
+  saved_buffer_mode = context.mode
+  context.mode = config.cmdline_start_mode
+  context.buffer = ""
+  mode_indicator.hide()
+end
+
+local function on_cmdline_leave()
+  if saved_buffer_mode then
+    context.mode = saved_buffer_mode
+  end
+  saved_buffer_mode = nil
+  context.buffer = ""
+  mode_indicator.hide()
+end
+
 --- <C-j> などの制御キーによるモード遷移を試みる。
 --- 現在のモードから見て遷移先が定義されていなければ何もしない。
 --- 【注意】この関数は init.lua が vim.keymap.set() 経由で直接呼ぶルートで、
@@ -546,6 +585,12 @@ function M.setup(opts)
   -- あるため、Neovim 自身に問い合わせて実際の表現を取得しておく。
   BS_TERMCODE = vim.api.nvim_replace_termcodes("<BS>", true, true, true)
   ns_id = vim.on_key(on_key, ns_id)
+
+  -- バッファのモードとコマンドラインのモードを独立に保つための
+  -- 退避・復元（on_cmdline_enter/on_cmdline_leave のコメントを参照）。
+  local augroup = vim.api.nvim_create_augroup("skk_cmdline_mode_isolation", { clear = true })
+  vim.api.nvim_create_autocmd("CmdlineEnter", { group = augroup, callback = on_cmdline_enter })
+  vim.api.nvim_create_autocmd("CmdlineLeave", { group = augroup, callback = on_cmdline_leave })
 end
 
 return M
