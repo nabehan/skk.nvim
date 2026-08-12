@@ -21,6 +21,7 @@ local preedit = require("skk.henkan.preedit")
 local candidate_window = require("skk.henkan.candidate_window")
 local dict = require("skk.dict")
 local kana_util = require("skk.kana_util")
+local target = require("skk.target")
 
 local M = {}
 
@@ -203,13 +204,22 @@ local function show_select_ui()
     candidate and candidate.word or nil,
     render_for_mode(session.okuri_kana or "", session.source_mode)
   )
+  local selected_offset = session.index - session.page * Session.PAGE_SIZE
+
+  if target.kind() == "cmdline" then
+    -- コマンドラインには「アンカーウィンドウのバッファ位置」という概念が
+    -- 無い（bufpos基準のrelative="win"が使えない）ため、専用の表示関数
+    -- （画面下部・コマンドライン行の直上に固定表示）を使う。
+    candidate_window.show_cmdline(session:page_candidates(), session.page + 1, session:page_count(), selected_offset)
+    return
+  end
+
   local anchor_win = preedit.anchor_win()
   local _, row, col = preedit.anchor_position()
   if anchor_win and row ~= nil and col ~= nil then
     -- 現在選択中の候補が、表示するページの中で何番目（ホームポジションの
     -- どのキーの位置）に当たるかを求め、候補一覧ウィンドウ側でも同じ
     -- 候補をハイライトできるようにする（インライン ▼ 表示との整合性のため）。
-    local selected_offset = session.index - session.page * Session.PAGE_SIZE
     candidate_window.show(
       anchor_win,
       row,
@@ -436,9 +446,26 @@ function M.confirm()
   end
 end
 
---- 実際にバッファへテキストを挿入して、セッションを終了する。
+--- 実際に確定テキストを書き込んで、セッションを終了する。
+--- バッファモードでは実バッファへ挿入（従来通り、textlock対策で
+--- vim.schedule）。コマンドラインモードでは、preedit が表示していた
+--- マーカーテキストの範囲を確定テキストで置き換える
+--- （target.replace_before_cursor() に委譲。cmdline側のカーソルは
+--- 常にマーカーの直後にあるので、その長さぶん削って確定テキストを
+--- 挿入すればよい。target.lua のコマンドライン実装は、これまでの
+--- ローマ字→かな変換で使っているのと同じ経路で、実機でも動作確認済み）。
 ---@param text string
 function M.confirm_text(text)
+  if target.kind() == "cmdline" then
+    local byte_len = preedit.pending_cmdline_byte_len()
+    preedit.clear_cmdline_tracking()
+    candidate_window.hide()
+    target.replace_before_cursor(byte_len, text)
+    phase = "idle"
+    session = nil
+    return
+  end
+
   local bufnr, row, col = preedit.anchor_position()
   preedit.hide()
   candidate_window.hide()

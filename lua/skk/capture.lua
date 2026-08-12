@@ -402,10 +402,9 @@ local function on_key(key, _typed)
   end
 
   -- 対応対象は挿入モード（バッファ）とコマンドラインモード。
-  -- 【現時点の制約】henkan（▽/▼、漢字変換）は extmark ベースの preedit
-  -- 表示（lua/skk/henkan/preedit.lua）に依存しており、コマンドラインには
-  -- extmark が存在しないためまだコマンドラインには対応していない。
-  -- ローマ字→かな変換・モード切替（l/q/L, <C-j>）はコマンドラインでも動く。
+  -- henkan（▽/▼、漢字変換）もコマンドラインで動く。preedit.lua が
+  -- コマンドラインでは extmark ではなくコマンドライン文字列への直接
+  -- 書き込みで表示する（lua/skk/henkan/preedit.lua 参照）。
   local target_kind = target.kind()
   if target_kind == nil then
     return
@@ -468,14 +467,15 @@ local function on_key(key, _typed)
     end
   end
 
-  -- henkan（▽/▼）・abbrev の開始は現時点ではバッファ（挿入モード）限定。
-  -- extmark ベースの preedit 表示に依存しているため（上の注釈を参照）。
-  if target_kind == "buffer" and context.buffer == "" and is_midashi_trigger_key(key) then
+  -- henkan（▽/▼）・abbrev の開始は、コマンドラインモードにも対応済み
+  -- （preedit.lua がコマンドラインでは extmark ではなくコマンドライン
+  -- 文字列への直接書き込みで表示する。lua/skk/henkan/preedit.lua 参照）。
+  if context.buffer == "" and is_midashi_trigger_key(key) then
     henkan_state.start_midashi(context.mode, midashi_trigger_first_char(key))
     return ""
   end
 
-  if target_kind == "buffer" and context.buffer == "" and key == "/" then
+  if context.buffer == "" and key == "/" then
     -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
     henkan_state.start_abbrev(context.mode)
     return ""

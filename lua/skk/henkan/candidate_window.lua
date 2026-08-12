@@ -19,6 +19,8 @@
 
 local M = {}
 
+local target = require("skk.target")
+
 --- ホームポジションキーを上から順に並べたもの。
 --- page_candidates() の配列インデックス（1〜7）と対応する。
 --- 【注意】`;` は Sticky-shift のトリガーキーと衝突するため含めない。
@@ -184,6 +186,39 @@ M._compute_placement = compute_placement
 -- row=0 を返す）。実機の Neovim（TUI/GUIが接続された状態）でのみ
 -- 意味のある検証ができる。
 
+--- 候補一覧の内容（バッファへの書き込み・ハイライト・幅/高さの算出）を
+--- 組み立てる。M.show()（バッファ用、relative="win"）と
+--- M.show_cmdline()（コマンドライン用、relative="editor"）の共通部分。
+---@param candidates SkkDictCandidate[]
+---@param page integer
+---@param page_count integer
+---@param selected_offset integer|nil
+---@return integer buf
+---@return integer width
+---@return integer height
+local function build_content(candidates, page, page_count, selected_offset)
+  local lines = format_lines(candidates)
+  if config.page_indicator then
+    table.insert(lines, page_indicator_line(page, page_count))
+  end
+  local b = get_buf()
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
+
+  vim.api.nvim_buf_clear_namespace(b, get_ns(), 0, -1)
+  if selected_offset and selected_offset >= 1 and selected_offset <= #candidates then
+    vim.api.nvim_buf_set_extmark(b, get_ns(), selected_offset - 1, 0, {
+      line_hl_group = "SkkHenkanCandidate",
+    })
+  end
+
+  local width = 1
+  for _, line in ipairs(lines) do
+    width = math.max(width, vim.fn.strdisplaywidth(line))
+  end
+  local height = #lines
+  return b, width, height
+end
+
 --- 候補一覧を、アンカー位置（変換プレエディットのカーソル位置）の
 --- すぐ下（入りきらなければ上）にフローティングウィンドウで表示する。
 --- 既に表示中なら、内容とサイズだけ更新する（ウィンドウを開き直さない）。
@@ -210,25 +245,7 @@ function M.show(anchor_win, anchor_row, anchor_col, candidates, page, page_count
     return
   end
 
-  local lines = format_lines(candidates)
-  if config.page_indicator then
-    table.insert(lines, page_indicator_line(page, page_count))
-  end
-  local b = get_buf()
-  vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
-
-  vim.api.nvim_buf_clear_namespace(b, get_ns(), 0, -1)
-  if selected_offset and selected_offset >= 1 and selected_offset <= #candidates then
-    vim.api.nvim_buf_set_extmark(b, get_ns(), selected_offset - 1, 0, {
-      line_hl_group = "SkkHenkanCandidate",
-    })
-  end
-
-  local width = 1
-  for _, line in ipairs(lines) do
-    width = math.max(width, vim.fn.strdisplaywidth(line))
-  end
-  local height = #lines
+  local b, width, height = build_content(candidates, page, page_count, selected_offset)
 
   -- ウィンドウが既に開いている（＝同じ変換セッション中にページ送り等で
   -- 再描画している）間は、最初に決めた配置を使い回す。閉じている状態
@@ -266,12 +283,69 @@ function M.show(anchor_win, anchor_row, anchor_col, candidates, page, page_count
   end
 end
 
+--- 【コマンドラインモード専用】候補一覧をコマンドライン行のすぐ上に
+--- フローティングウィンドウで表示する。
+---
+--- コマンドラインには M.show() が使う「アンカーウィンドウのバッファ位置
+--- （bufpos）」という概念が無い（コマンドライン編集中、実際のウィンドウの
+--- カーソルはコマンドラインに入る前の位置に固定されたままで、コマンド
+--- ライン自体のバッファ位置は存在しない）ため、relative="win" は使えない。
+--- 代わりに mode_indicator.lua と同じ考え方で relative="editor" を使い、
+--- 常にコマンドライン行のすぐ上（画面下端寄り）に固定表示する。上下の
+--- sticky配置切り替えは行わない（コマンドラインは1行固定なので、画面上の
+--- 位置が動くバッファ内カーソルほど配置に迷う余地が無いため）。
+---
+--- 【redraw が必要な理由】mode_indicator.lua で確認したのと同じく、
+--- コマンドライン編集中に新規作成・再配置したフローティングウィンドウは
+--- 明示的な 'redraw' が無いと画面に反映されない（実機で確認済みの
+--- 既知の挙動）。
+---@param candidates SkkDictCandidate[] 現在ページの候補一覧（最大7件）
+---@param page integer 現在のページ（1-indexed）
+---@param page_count integer 全ページ数
+---@param selected_offset integer|nil 現在選択中の候補の、ページ内での位置（1〜7）。
+---  nil ならハイライトしない。
+function M.show_cmdline(candidates, page, page_count, selected_offset)
+  if #candidates == 0 then
+    M.hide()
+    return
+  end
+
+  local b, width, height = build_content(candidates, page, page_count, selected_offset)
+  local total_height = height + border_row_overhead()
+
+  local win_config = {
+    relative = "editor",
+    row = math.max(vim.o.lines - vim.o.cmdheight - total_height, 0),
+    col = 0,
+    width = width,
+    height = height,
+    style = "minimal",
+    border = config.border,
+    focusable = false,
+    zindex = 240, -- mode_indicator（250）より少し低くし、万一重なってもモード表示を隠さない
+  }
+
+  if win and vim.api.nvim_win_is_valid(win) then
+    vim.api.nvim_win_set_config(win, win_config)
+  else
+    win_config.noautocmd = true
+    win = vim.api.nvim_open_win(b, false, win_config)
+  end
+
+  vim.cmd("redraw")
+end
+
 --- ウィンドウを閉じる。確定・キャンセル・ページ移動で候補が0件に
 --- なった場合等に呼ぶ。次の変換セッションで配置を再計算できるよう、
 --- sticky な配置の記憶もここでリセットする。
 function M.hide()
   if win and vim.api.nvim_win_is_valid(win) then
     vim.api.nvim_win_close(win, true)
+    -- show_cmdline() 同様、コマンドライン編集中は明示的な redraw が無いと
+    -- ウィンドウを閉じたことが画面に反映されない。
+    if target.kind() == "cmdline" then
+      vim.cmd("redraw")
+    end
   end
   win = nil
   sticky_corner = nil
