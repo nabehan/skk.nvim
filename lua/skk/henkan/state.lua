@@ -390,6 +390,18 @@ function M._trigger_registration()
 
   local prompt = "[単語登録] " .. reading_display .. (search_has_okuri and ("*" .. okuri_display) or "") .. ": "
 
+  -- 単語登録では変換操作を行う機会が圧倒的に多いため、登録UIの入力欄
+  -- （これから開く vim.fn.input()、内部的には次のコマンドラインモード）
+  -- はひらがなモードから始まるようにする（実機での要望。再帰的な単語
+  -- 登録のたびに毎回 <C-j> するのは煩わしいため）。capture.lua を
+  -- state.lua の先頭で require すると循環require（capture.lua が
+  -- 起動時に state.lua を require している）になるため、この関数の中で
+  -- 実行時に遅延requireする。
+  local ok_capture, capture = pcall(require, "skk.capture")
+  if ok_capture and capture.reserve_next_cmdline_mode then
+    capture.reserve_next_cmdline_mode("hira")
+  end
+
   vim.keymap.set("c", "<Esc>", REGISTRATION_CANCEL_SENTINEL .. "<CR>", { noremap = true })
   vim.keymap.set("c", "<C-g>", REGISTRATION_CANCEL_SENTINEL .. "<CR>", { noremap = true })
 

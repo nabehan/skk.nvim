@@ -514,6 +514,18 @@ end
 ---@type SkkMode|nil
 local saved_buffer_mode = nil
 
+--- 次に開くコマンドラインモードの開始モードを、1回だけ上書きする予約値。
+--- 通常の `:`/`/` では nil のままで、config.cmdline_start_mode（既定は
+--- "ascii"）から始まる。単語登録UI（henkan/state.lua の
+--- M._trigger_registration()）が vim.fn.input() を呼ぶ前に
+--- M.reserve_next_cmdline_mode("hira") で予約しておくと、その次に開く
+--- コマンドライン（＝登録UIの入力欄そのもの）だけがひらがなモードで
+--- 始まる。単語登録では変換操作を行う機会が圧倒的に多く、毎回 <C-j> で
+--- 切り替える手間を省くため（実機での要望）。一度使ったら即座に消費して
+--- nil に戻すので、次の通常のコマンドラインには影響しない。
+---@type SkkMode|nil
+local next_cmdline_mode_override = nil
+
 --- コマンドラインモードに入った/出た瞬間の処理。
 --- 【なぜ必要か】context.mode は capture.lua 内で単一の値として管理して
 --- おり、バッファとコマンドラインで自動的には分離されない。何もしないと
@@ -523,7 +535,12 @@ local saved_buffer_mode = nil
 --- でモードを退避・復元することでこれを防ぐ。
 local function on_cmdline_enter()
   saved_buffer_mode = context.mode
-  context.mode = config.cmdline_start_mode
+  if next_cmdline_mode_override then
+    context.mode = next_cmdline_mode_override
+    next_cmdline_mode_override = nil
+  else
+    context.mode = config.cmdline_start_mode
+  end
   context.buffer = ""
   mode_indicator.hide()
 end
@@ -535,6 +552,13 @@ local function on_cmdline_leave()
   saved_buffer_mode = nil
   context.buffer = ""
   mode_indicator.hide()
+end
+
+--- 次に開くコマンドラインモードの開始モードを1回だけ上書きする。
+--- 上の next_cmdline_mode_override のコメントを参照。
+---@param mode SkkMode
+function M.reserve_next_cmdline_mode(mode)
+  next_cmdline_mode_override = mode
 end
 
 --- <C-j> などの制御キーによるモード遷移を試みる。
