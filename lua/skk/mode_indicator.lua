@@ -93,6 +93,16 @@ function M.show(mode)
     win_config.noautocmd = true
     win = vim.api.nvim_open_win(b, false, win_config)
   end
+
+  -- 【なぜ redraw が必要か】コマンドライン編集中（Enterを押す前）に新規
+  -- 作成・再配置したフローティングウィンドウは、Neovimの通常の画面再描画
+  -- サイクルには乗らず、次にコマンドラインを抜けるまで実際には描画され
+  -- ない（実機で確認済みの既知の挙動）。挿入モードでは次のキー入力ごとに
+  -- 通常の再描画が走るため問題にならないが、コマンドラインでは明示的に
+  -- 'redraw' を挟まない限り画面に反映されない。
+  if vim.api.nvim_get_mode().mode == "c" then
+    vim.cmd("redraw")
+  end
 end
 
 --- インジケーターを消す。実際の入力があった時点（capture.lua の
@@ -100,6 +110,11 @@ end
 function M.hide()
   if win and vim.api.nvim_win_is_valid(win) then
     vim.api.nvim_win_close(win, true)
+    -- show() 同様、コマンドライン編集中は明示的な redraw が無いと
+    -- ウィンドウを閉じたことが画面に反映されない（表示が残り続ける）。
+    if vim.api.nvim_get_mode().mode == "c" then
+      vim.cmd("redraw")
+    end
   end
   win = nil
 end
