@@ -67,6 +67,36 @@ vim.keymap.set("c", "<C-b>", function()
   })
 end, { desc = "skk_debug_float: toggle bottom-right test float" })
 
+-- <C-r>: <C-t>と同じ左上フロートだが、開いた直後に明示的に redraw を
+-- 強制する。もしこれで即座に見えるようになるなら、
+-- 「コマンドライン編集中は新規フロートの再描画が抑制される」が原因で、
+-- 対策は open 直後に redraw を挟むだけで済むことになる。
+vim.keymap.set("c", "<C-r>", function()
+  if top_win and vim.api.nvim_win_is_valid(top_win) then
+    vim.api.nvim_win_close(top_win, true)
+    top_win = nil
+    return
+  end
+  local buf = make_buf(" REDRAW-TEST (C-r) ", "WarningMsg")
+  top_win = vim.api.nvim_open_win(buf, false, {
+    relative = "editor",
+    row = 0,
+    col = 0,
+    width = 22,
+    height = 1,
+    style = "minimal",
+    border = "none",
+    focusable = false,
+    zindex = 300,
+    noautocmd = true,
+  })
+  local ok, err = pcall(vim.cmd, "redraw")
+  vim.api.nvim_echo({ { string.format("redraw: ok=%s err=%s", tostring(ok), tostring(err)), "MoreMsg" } }, false, {})
+end, { desc = "skk_debug_float: top-left float + explicit redraw" })
+
 vim.api.nvim_echo({
-  { "skk_debug_float loaded: cmdline中に <C-t> (左上) / <C-b> (右下) でフロートを試せます", "MoreMsg" },
+  {
+    "skk_debug_float loaded: cmdline中に <C-t> (左上/redrawなし) <C-r> (左上/redrawあり) <C-b> (右下) でフロートを試せます",
+    "MoreMsg",
+  },
 }, false, {})
