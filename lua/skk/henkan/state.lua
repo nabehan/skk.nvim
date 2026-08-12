@@ -354,15 +354,34 @@ function M._trigger_registration()
   local search_has_okuri = session.search_has_okuri
 
   local target_kind = target.kind()
-  local cmdline_byte_len = nil
-  local buf_bufnr, buf_row, buf_col = nil, nil, nil
-  if target_kind == "cmdline" then
-    cmdline_byte_len = preedit.pending_cmdline_byte_len()
-  else
-    buf_bufnr, buf_row, buf_col = preedit.anchor_position()
-  end
 
   candidate_window.hide()
+
+  -- 【重要】▽/▼ のマーカー表示は、vim.fn.input() を呼ぶ前にここで
+  -- 即座に消す（あとで消すのではなく）。
+  --
+  -- 理由: preedit.lua の M.anchor() は、コマンドラインモード用の状態を
+  -- 設定する際にバッファモード用の状態（anchor_bufnr/anchor_row/
+  -- anchor_col）を nil にクリアする実装になっている。これは通常の
+  -- （ネストしない）利用では正しいが、単語登録UIでは「バッファで変換→
+  -- 登録UI（vim.fn.input()）を開く→その中でさらに変換」という流れに
+  -- なるため、ネストした変換が preedit.anchor() を呼んだ瞬間、外側
+  -- （バッファ）の anchor 情報が消えてしまう。vim.fn.input() が終わった
+  -- "あとで" preedit.hide() を呼ぶと、この時点で anchor_bufnr が
+  -- 既に nil になっており、古い extmark が削除されずに残ってしまう
+  -- （実機で発見された不具合）。マーカーが消えた後の挿入位置は
+  -- バッファ側はカーソル位置（バッファのマーカーは extmark 表示のみで
+  -- 実バッファには影響しないため、消してもカーソル位置は動かない）、
+  -- コマンドライン側は preedit.hide() が返す新しいカーソル位置
+  -- （setcmdline の第2引数）にそのまま追従するので、ここで先に消して
+  -- おけば、確定時は「今のカーソル位置に挿入するだけ」でよくなり、
+  -- ネストした変換による preedit.lua のシングルトン状態上書きの影響を
+  -- 受けなくなる。
+  local buf_bufnr, buf_row, buf_col
+  if target_kind ~= "cmdline" then
+    buf_bufnr, buf_row, buf_col = preedit.anchor_position()
+  end
+  preedit.hide()
 
   -- ここでこの変換セッションは終了させる（input() から戻ってきたときに
   -- 「続きから再開」はしない。上のコメント参照）。
@@ -390,10 +409,10 @@ function M._trigger_registration()
     end
 
     if target_kind == "cmdline" then
-      target.replace_before_cursor(cmdline_byte_len or 0, final_text)
-      preedit.clear_cmdline_tracking()
+      -- preedit.hide() が既にマーカー分を削除し終えているので、
+      -- 削除バイト数は 0（今のカーソル位置に挿入するだけ）でよい。
+      target.replace_before_cursor(0, final_text)
     elseif buf_bufnr and buf_row ~= nil and buf_col ~= nil then
-      preedit.hide()
       vim.api.nvim_buf_set_text(buf_bufnr, buf_row, buf_col, buf_row, buf_col, { final_text })
       vim.api.nvim_win_set_cursor(0, { buf_row + 1, buf_col + #final_text })
     end
