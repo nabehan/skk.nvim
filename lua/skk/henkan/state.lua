@@ -291,18 +291,118 @@ function M.search()
   end
 end
 
---- 候補ゼロ件のときのフォールバック。
---- 画面に表示していた（source_mode でレンダリング済みの）読み + 送り仮名を
---- そのままプレーンテキストで確定し、通知を出す。
---- 本家 SKK のシームレスな単語登録は今後実装予定。
+--- 単語登録UIへ遷移する際に「キャンセルされたら確定すべきテキスト」を
+--- 求める。候補が1件も無い場合（current_candidate() が nil）は
+--- 読み+送り仮名（従来のフォールバックと同じ）、候補はあるが末尾から
+--- 次に送ろうとした場合は、その時点で画面に▼表示されていた候補+送り仮名。
+---@return string
+local function current_fallback_text()
+  local okuri = render_for_mode(session.okuri_kana or "", session.source_mode)
+  local candidate = session:current_candidate()
+  if candidate then
+    return candidate.word .. okuri
+  end
+  return render_for_mode(session.reading, session.source_mode) .. okuri
+end
+
+--- 単語登録UIを開いても安全に使えるよう、Esc/C-g を「本当にキャンセル
+--- されたか」判定できるセンチネル文字列に一時的に再マップする際に使う
+--- （Neovim組み込みの vim.fn.input() は <C-g> を特別扱いしない＝ただの
+--- 制御文字として無視されてしまい、<Esc> と挙動を統一できないため）。
+--- 実際に人間が入力する見出し語に紛れ込む可能性が無いよう、制御文字で
+--- 構成してある。skkeleton（denops/skkeleton/function/dictionary.ts の
+--- registerWord()）が "__skkeleton_return__" という文字列で行っているのと
+--- 同じ発想。
+local REGISTRATION_CANCEL_SENTINEL = "\1skk_nvim_registration_cancel\1"
+
+--- 候補が見つからない、または候補送りで末尾から次へ進もうとしたときに
+--- 呼ぶ。単語登録UIを開き、確定すれば個人辞書に書き込んでその単語を、
+--- キャンセルすれば current_fallback_text() をそのまま確定する。
+---
+--- 【設計】Neovim組み込みの vim.fn.input() は、コマンドラインモード
+--- （mode()=="c"）を再帰的に開く機能で、呼び出し中も mode()=="c" を
+--- 保ち続け、終了後は呼び出し元（挿入モードなら挿入モード、コマンドライン
+--- 編集中ならその続き）へ自動的に復帰する。この性質のおかげで、既存の
+--- target.lua/capture.lua/preedit.lua のコマンドラインモード対応
+--- （ローマ字→かな変換・henkan）が、専用のUIコードを書かなくてもこの中で
+--- そのまま動く（RPC経由の検証・実機の両方で確認済み）。denops版の
+--- skkeleton（vim-skk/skkeleton）の registerWord() と基本的に同じ設計。
+---
+--- 【状態管理】この関数を呼ぶ時点の module-level な phase/session
+--- （＝これから登録するに至った変換セッション）は、確定・キャンセルの
+--- いずれであれ、ここで完全に終了させる（「呼び出し元へ戻る」概念は無い）。
+--- vim.fn.input() を呼ぶ前に phase/session をクリアしておくことで、
+--- input() の中でユーザーがさらに変換（ネストしたSKK変換。SKKの本領とも
+--- 言える「再帰的な単語登録」）をしても、同じ state.lua を安全に再利用
+--- できる。
+---
+--- 【コマンドライン用 preedit の後始末について】input() の中でネストした
+--- 変換が行われると、preedit.lua のコマンドライン用追跡状態（module単位の
+--- シングルトン）が上書きされる。そのため、この関数はその状態には頼らず、
+--- input() を呼ぶ前に確保しておいたローカル変数（バッファ位置 or
+--- コマンドラインの削除バイト数）を直接使って最終テキストを書き込む
+--- （state.lua の confirm_text() と同じ書き込み経路）。
+function M._trigger_registration()
+  if not session then
+    return
+  end
+
+  local fallback_text = current_fallback_text()
+  local reading_display = render_for_mode(session.reading, session.source_mode)
+  local okuri_display = render_for_mode(session.okuri_kana or "", session.source_mode)
+  local search_key = session.search_key
+  local search_has_okuri = session.search_has_okuri
+
+  local target_kind = target.kind()
+  local cmdline_byte_len = nil
+  local buf_bufnr, buf_row, buf_col = nil, nil, nil
+  if target_kind == "cmdline" then
+    cmdline_byte_len = preedit.pending_cmdline_byte_len()
+  else
+    buf_bufnr, buf_row, buf_col = preedit.anchor_position()
+  end
+
+  candidate_window.hide()
+
+  -- ここでこの変換セッションは終了させる（input() から戻ってきたときに
+  -- 「続きから再開」はしない。上のコメント参照）。
+  phase = "idle"
+  session = nil
+
+  local prompt = "[単語登録] " .. reading_display .. (search_has_okuri and ("*" .. okuri_display) or "") .. ": "
+
+  vim.keymap.set("c", "<Esc>", REGISTRATION_CANCEL_SENTINEL .. "<CR>", { noremap = true })
+  vim.keymap.set("c", "<C-g>", REGISTRATION_CANCEL_SENTINEL .. "<CR>", { noremap = true })
+
+  vim.schedule(function()
+    local ok, result = pcall(vim.fn.input, prompt)
+    pcall(vim.keymap.del, "c", "<Esc>")
+    pcall(vim.keymap.del, "c", "<C-g>")
+
+    local final_text
+    if not ok or result == "" or result:find(REGISTRATION_CANCEL_SENTINEL, 1, true) then
+      final_text = fallback_text
+    else
+      if search_key then
+        dict.record_selection(search_key, search_has_okuri or false, result, nil)
+      end
+      final_text = result .. okuri_display
+    end
+
+    if target_kind == "cmdline" then
+      target.replace_before_cursor(cmdline_byte_len or 0, final_text)
+      preedit.clear_cmdline_tracking()
+    elseif buf_bufnr and buf_row ~= nil and buf_col ~= nil then
+      preedit.hide()
+      vim.api.nvim_buf_set_text(buf_bufnr, buf_row, buf_col, buf_row, buf_col, { final_text })
+      vim.api.nvim_win_set_cursor(0, { buf_row + 1, buf_col + #final_text })
+    end
+  end)
+end
+
+--- 候補ゼロ件のときのフォールバック。単語登録UIを開く。
 function M._fallback_no_candidates()
-  local text = render_for_mode(session.reading, session.source_mode)
-    .. render_for_mode(session.okuri_kana or "", session.source_mode)
-  M.confirm_text(text)
-  vim.notify(
-    "skk.nvim: 候補が見つかりませんでした（シームレスな単語登録は今後実装予定です）",
-    vim.log.levels.INFO
-  )
+  M._trigger_registration()
 end
 
 --- 次の候補（▼状態のみ）。<SPC> に割り当てる。
@@ -319,17 +419,29 @@ function M.next_page()
   session.space_count = (session.space_count or 0) + 1
 
   if session.space_count < config.candidate_window_threshold then
+    if session.index >= #session.candidates then
+      M._trigger_registration()
+      return
+    end
     session:advance_single()
     show_inline_preview_only()
     return
   end
 
   if session.space_count == config.candidate_window_threshold then
+    if session.index >= #session.candidates then
+      M._trigger_registration()
+      return
+    end
     session:advance_single()
     show_select_ui()
     return
   end
 
+  if session.page >= session:page_count() - 1 then
+    M._trigger_registration()
+    return
+  end
   session:next_page()
   show_select_ui()
 end
@@ -360,6 +472,10 @@ end
 --- 候補一覧ウィンドウを表示する。
 function M.focus_next()
   if phase ~= "select" or not session then
+    return
+  end
+  if session.index >= #session.candidates then
+    M._trigger_registration()
     return
   end
   session:advance_single()

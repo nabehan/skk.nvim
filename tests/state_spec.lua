@@ -40,6 +40,10 @@ package.loaded["skk.henkan.preedit"] = {
   anchor_win = function()
     return 1000 -- 固定のダミー winid
   end,
+  pending_cmdline_byte_len = function()
+    return 0
+  end,
+  clear_cmdline_tracking = function() end,
 }
 
 -- --- 偽の candidate_window（呼び出し履歴を記録するだけ） ---
@@ -74,6 +78,18 @@ vim.api.nvim_buf_set_text = function(bufnr, r1, c1, r2, c2, lines)
 end
 vim.api.nvim_win_set_cursor = function(_, _) end
 
+-- --- 単語登録UI（M._trigger_registration が呼ぶ vim.fn.input()）のスタブ ---
+-- 本物の vim.fn.input() は実際にブロッキングでキー入力を待ってしまい、
+-- headless テスト環境ではハングする（キーボード入力が来ないため）。
+-- デフォルトでは常に空文字列（＝キャンセル）を返すようにしておき、
+-- 「単語登録UIで実際に単語を入力するケース」を検証したいテストだけ、
+-- その it() ブロック内で一時的に差し替える。
+vim.fn = vim.fn or {}
+vim.fn.input = function(_)
+  return ""
+end
+vim.keymap = vim.keymap or {}
+
 local state = require("skk.henkan.state")
 local dict = require("skk.dict")
 local parser = require("skk.dict.jisyo_parser")
@@ -82,6 +98,10 @@ local function reset()
   preedit_calls = {}
   candidate_window_calls = {}
   buf_set_text_calls = {}
+  -- 単語登録UIのテスト（dict.record_selection の実際の書き込み）を
+  -- 検証できるよう、個人辞書のパスをテストごとに一時ファイルへ切り替える
+  -- （user_dict.record_selection は path が未設定だと何もせず no-op する）。
+  dict.set_user_dict_path(vim.fn.tempname())
   -- 既存のテスト群は「▼開始と同時にウィンドウを表示する」旧来の挙動
   -- （= threshold 1）を前提に書かれているので固定しておく。
   -- threshold 自体の挙動は別の describe ブロックで検証する。
@@ -746,5 +766,92 @@ describe("state: focus_next/focus_prev（<C-n>/<C-p> 相当）", function()
     state.focus_next()
     state.confirm()
     assert.are.equal("3", last_inserted_text())
+  end)
+end)
+
+describe("state: 単語登録UI（末尾からの循環を廃止し、登録UIへ遷移する）", function()
+  before_each(function()
+    reset()
+    state.setup({ candidate_window_threshold = 1 })
+  end)
+
+  it(
+    "候補が1件だけのとき、2回目の<SPC>は循環せず登録UIへ行く（キャンセルで元の候補を確定）",
+    function()
+      dict.set_dict(parser.parse("かんじ /漢字/"))
+      vim.fn.input = function(_)
+        return "" -- 登録UIをキャンセル（何も入力せず<CR>/<Esc>相当）
+      end
+      state.start_midashi("hira", "k")
+      for ch in ("anji"):gmatch(".") do
+        state.input(ch)
+      end
+      state.space() -- ▼開始、候補1「漢字」
+      state.space() -- 本来なら1件しか無いので循環するところ、登録UIへ
+      assert.are.equal("idle", state.get_phase())
+      -- キャンセルされたので、直前に表示されていた候補「漢字」がそのまま確定する
+      assert.are.equal("漢字", last_inserted_text())
+    end
+  )
+
+  it(
+    "登録UIで単語を入力して<CR>すると、個人辞書に書き込まれてその単語が確定する",
+    function()
+      dict.set_dict(parser.parse("かんじ /漢字/"))
+      vim.fn.input = function(prompt)
+        assert.is_true(prompt:find("かんじ", 1, true) ~= nil) -- プロンプトに読みが含まれる
+        return "新漢字"
+      end
+      state.start_midashi("hira", "k")
+      for ch in ("anji"):gmatch(".") do
+        state.input(ch)
+      end
+      state.space()
+      state.space() -- 末尾から登録UIへ
+      assert.are.equal("idle", state.get_phase())
+      assert.are.equal("新漢字", last_inserted_text())
+      -- 個人辞書に反映され、次回検索で候補に含まれることを確認する
+      local candidates = dict.lookup("かんじ", false)
+      local found = false
+      for _, c in ipairs(candidates) do
+        if c.word == "新漢字" then
+          found = true
+        end
+      end
+      assert.is_true(found)
+    end
+  )
+
+  it("候補ゼロ件のとき、登録UIで単語を入力すると個人辞書に新規登録される", function()
+    dict.set_dict(parser.parse("かんじ /漢字/")) -- "みつからない" は登録しない
+    vim.fn.input = function(_)
+      return "見付からない"
+    end
+    state.start_midashi("hira", "m")
+    for ch in ("itukaranai"):gmatch(".") do
+      state.input(ch)
+    end
+    state.space()
+    assert.are.equal("idle", state.get_phase())
+    assert.are.equal("見付からない", last_inserted_text())
+    local candidates = dict.lookup("みつからない", false)
+    assert.are.equal(1, #candidates)
+    assert.are.equal("見付からない", candidates[1].word)
+  end)
+
+  it("focus_next（<C-n>相当）でも、末尾候補から先は循環せず登録UIへ行く", function()
+    dict.set_dict(parser.parse("かんじ /1/2/"))
+    vim.fn.input = function(_)
+      return ""
+    end
+    state.start_midashi("hira", "k")
+    for ch in ("anji"):gmatch(".") do
+      state.input(ch)
+    end
+    state.space() -- 候補1「1」
+    state.focus_next() -- 候補2「2」
+    state.focus_next() -- 末尾なので登録UIへ（「1」に循環しない）
+    assert.are.equal("idle", state.get_phase())
+    assert.are.equal("2", last_inserted_text())
   end)
 end)
