@@ -58,6 +58,17 @@ function M.get_phase()
   return phase
 end
 
+--- 現在の（確定済み部分の）読みを返す。phase=="idle" なら nil。
+--- blink.cmp ネイティブソース（lua/skk/blink_source.lua）が、ライブ補完
+--- 検索のキーとして使う。
+---@return string|nil
+function M.current_reading()
+  if not session then
+    return nil
+  end
+  return session.reading
+end
+
 --- 表示・確定用のレンダリング: source_mode がカタカナならカタカナに
 --- 変換し、ひらがなならそのまま返す。
 --- 【設計】① 内部の読み（session.reading）は常にひらがなで保持する。
@@ -605,6 +616,31 @@ function M.convert_and_confirm_kana()
     return
   end
   M.confirm_text(kana_util.to_katakana(session.reading))
+end
+
+--- 外部UI（blink.cmp ネイティブソース等）から、特定の候補が選ばれたときに
+--- 呼ぶ。通常の M.confirm()（現在フォーカス中の候補を確定）と違い、
+--- 呼び出し側が指定した任意の reading/word をそのまま確定する。
+---
+--- 【なぜ必要か】blink.cmp のライブ補完（`▽` 見出し語入力中の前方一致
+--- 候補、lua/skk/blink_source.lua）では、必ずしも現在の session が
+--- 指している候補・読みとは限らない（例: `session.reading` が "かん" の
+--- 時点で、前方一致した "かんじ"（漢字）を直接選ぶ、といったことが起きる）。
+--- そのため reading/has_okuri/word を明示的に受け取る形にしてある。
+---
+--- 送りありの前方一致補完は現時点で提供していない（dict.lookup_prefix()
+--- の設計を参照）ため、送り仮名の付与はしない。phase=="idle"（変換して
+--- いない）なら何もしない。
+---@param reading string
+---@param has_okuri boolean
+---@param word string
+---@param annotation string|nil
+function M.confirm_external(reading, has_okuri, word, annotation)
+  if phase == "idle" then
+    return
+  end
+  dict.record_selection(reading, has_okuri, word, annotation)
+  M.confirm_text(word)
 end
 
 --- 確定操作（Enter 等）。▼状態なら選択中の候補+送り仮名、▽/abbrev状態なら

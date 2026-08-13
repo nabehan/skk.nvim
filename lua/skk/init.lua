@@ -39,6 +39,10 @@ local M = {}
 ---  文字コード。伝統的な skkserv は EUC-JP が主流）。timeout_ms は1回の検索の待ち時間上限
 ---  （省略時 300）。debug は送受信の生データを vim.notify() で出力するか（省略時 false）。
 ---  個人辞書の次、ローカル辞書より先にマージされる。
+---@field blink { max_items: integer }? blink.cmp ネイティブソース（lua/skk/blink_source.lua）の
+---  設定。`▽` 見出し語入力中の前方一致ライブ補完で、1回の検索あたり何件までアイテムを
+---  出すか。デフォルト 50。ソース自体の登録（blink.cmp の setup() の sources.providers）は
+---  ユーザーの設定側で行う必要がある（README.md の「blink.cmp 連携」参照）。
 
 --- ▽/▼ 表示用のハイライトグループのデフォルトを定義する。
 --- 既にユーザーやカラースキームが定義済みなら上書きしない (default = true)。
@@ -66,6 +70,17 @@ function M.setup(opts)
   dict.set_user_dict_path(user_dictionary)
   if opts.skkserv then
     dict.set_skkserv(opts.skkserv)
+  end
+
+  -- blink.cmp ネイティブソースの設定だけここで受け取る（ソース自体の
+  -- require はしない。blink.cmp が入っていない環境でも require("skk").setup()
+  -- がエラーにならないようにするため。実際の require は blink.cmp が
+  -- ソースを呼び出す時点、つまり blink_source.lua 自身の中で遅延して行う）。
+  if opts.blink then
+    local ok, blink_source = pcall(require, "skk.blink_source")
+    if ok then
+      blink_source.setup(opts.blink)
+    end
   end
 
   local function notify_mode()
