@@ -76,6 +76,29 @@ local function render_for_mode(text, mode)
 end
 M._render_for_mode = render_for_mode -- テスト用に公開
 
+--- ▽/▼ の状態変化を User autocmd で通知する。skkeleton の
+--- "skkeleton-mode-changed"/"skkeleton-handled" 相当の仕組みで、
+--- blink.cmp ネイティブソース（lua/skk/blink_source.lua）や、その他
+--- 外部の設定側が、変換中かどうか・現在の読み・送りありかどうかを見て
+--- 補完メニューの表示/非表示を切り替えるためのフック。
+--- 【設計】ここでは通知するだけで、何を表示するかの判断は一切しない
+--- （すべて受け手側の責務）。data.phase が "idle" になったことをもって
+--- 「非表示にしてよい」と判断できる。
+--- pcall で保護しているのは、テスト環境（フェイクの vim.api）で
+--- nvim_exec_autocmds が無くても落ちないようにするため。
+local function notify_changed()
+  local data = { phase = phase }
+  if session then
+    data.reading = session.reading
+    data.has_okuri = session.search_has_okuri or false
+    data.source_mode = session.source_mode
+  end
+  pcall(vim.api.nvim_exec_autocmds, "User", {
+    pattern = "SkkHenkanChanged",
+    data = data,
+  })
+end
+
 --- ▽ 表示用に、確定済みの読み（source_mode でレンダリング済み）と
 --- 未確定のローマ字断片を連結する。
 --- 【重要】これが抜けていると "K"→"▽"、"Kan"→"▽か"（"n" が消える）
@@ -95,6 +118,7 @@ function M.start_midashi(mode, first_char)
   preedit.anchor()
   session:input_reading(first_char)
   preedit.show_midashi(midashi_display(), session.okuri_consonant)
+  notify_changed()
 end
 
 --- 送り開始点を設定する。▽の中でもう一度大文字キー（送りあり変換の
@@ -117,6 +141,7 @@ function M.start_abbrev(mode)
   session = Session.new(mode)
   preedit.anchor()
   preedit.show_abbrev(session.reading)
+  notify_changed()
 end
 
 --- abbrev モードの間に ASCII 文字を1文字追加する。
@@ -127,6 +152,7 @@ function M.input_abbrev(char)
   end
   session:input_abbrev(char)
   preedit.show_abbrev(session.reading)
+  notify_changed()
 end
 
 --- abbrev モード専用: <C-q> 相当。ここまでの見出し（ASCII文字列）を
@@ -155,6 +181,7 @@ function M.input(char)
   if session:is_okuri_pending() then
     local confirmed = session:input_okuri(char)
     preedit.show_midashi(midashi_display(), session.okuri_consonant)
+    notify_changed()
     if confirmed then
       M.search()
     end
@@ -163,6 +190,7 @@ function M.input(char)
 
   session:input_reading(char)
   preedit.show_midashi(midashi_display(), session.okuri_consonant)
+  notify_changed()
 end
 
 --- <BS> 相当。読みを1文字消す。空になったらセッションごと中断する。
@@ -184,6 +212,7 @@ function M.backspace()
       return
     end
     preedit.show_abbrev(session.reading)
+    notify_changed()
     return
   end
 
@@ -193,6 +222,7 @@ function M.backspace()
     return
   end
   preedit.show_midashi(midashi_display(), session.okuri_consonant)
+  notify_changed()
 end
 
 --- ▼ 状態の表示を更新する（inline の ▼候補 表示 + 候補一覧ウィンドウ）。
@@ -211,6 +241,7 @@ local function show_select_ui()
     -- 無い（bufpos基準のrelative="win"が使えない）ため、専用の表示関数
     -- （画面下部・コマンドライン行の直上に固定表示）を使う。
     candidate_window.show_cmdline(session:page_candidates(), session.page + 1, session:page_count(), selected_offset)
+    notify_changed()
     return
   end
 
@@ -230,6 +261,7 @@ local function show_select_ui()
       selected_offset
     )
   end
+  notify_changed()
 end
 
 --- 候補一覧ウィンドウを表示する前段階（<SPC> を押した回数が
@@ -241,6 +273,7 @@ local function show_inline_preview_only()
     candidate and candidate.word or nil,
     render_for_mode(session.okuri_kana or "", session.source_mode)
   )
+  notify_changed()
 end
 
 --- スペース。▽/abbrev 状態なら辞書検索して▼へ、▼状態なら次の1候補
@@ -387,6 +420,7 @@ function M._trigger_registration()
   -- 「続きから再開」はしない。上のコメント参照）。
   phase = "idle"
   session = nil
+  notify_changed() -- 単語登録UI（vim.fn.input()）を開く前に「非アクティブ」を通知する
 
   local prompt = "[単語登録] " .. reading_display .. (search_has_okuri and ("*" .. okuri_display) or "") .. ": "
 
@@ -610,6 +644,7 @@ function M.confirm_text(text)
     target.replace_before_cursor(byte_len, text)
     phase = "idle"
     session = nil
+    notify_changed()
     return
   end
 
@@ -624,6 +659,7 @@ function M.confirm_text(text)
   end
   phase = "idle"
   session = nil
+  notify_changed()
 end
 
 --- <C-g> 相当。変換を中断し、何も挿入せずに破棄する。
@@ -632,6 +668,7 @@ function M.cancel()
   candidate_window.hide()
   phase = "idle"
   session = nil
+  notify_changed()
 end
 
 return M
