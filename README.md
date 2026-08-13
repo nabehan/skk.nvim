@@ -31,6 +31,7 @@ lua/skk/
 ├── kana_table.lua          -- ローマ字 → ひらがな 変換テーブル（子音×母音から機械的に生成）
 ├── kana_util.lua           -- ひらがな⇔カタカナ⇔全角英数の相互変換
 ├── encoding.lua            -- 辞書ファイルの文字コード変換（vim.fn.iconv() のラッパー）
+├── blink_source.lua        -- blink.cmp 用ネイティブソース（▽状態でのライブ前方一致補完）
 ├── henkan/                -- ▽/▼（漢字変換）の状態機械と見た目
 │   ├── state.lua            -- 状態機械本体（idle/midashi/select/abbrev）。capture.lua から呼ばれる
 │   ├── session.lua          -- 1回の変換セッションが持つ読み・候補・ページ状態
@@ -140,6 +141,18 @@ lua/skk/
 - 単語を入力して `<CR>` すると `dict.record_selection()` で個人辞書に書き込まれ、その単語（+送り仮名）が確定する。
 - `▽`/`▼` のマーカー表示は `vim.fn.input()` を呼ぶ**前**に消す（呼んだ後だと、ネストした変換が `preedit.lua` の内部状態を上書きしてしまい、マーカーが消えずに残ったまま新しい単語が挿入される不具合があった。実機で発見・修正済み）。
 
+### blink.cmp ネイティブソース統合 (`blink_source.lua`)
+
+skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブソースとしても動作する（`sources.providers` への登録自体はこのプラグインの外、ユーザー設定側の責務。後述「使い方」参照）。`▽`（見出し語入力中）状態のときだけ `dict.lookup_prefix()` による前方一致検索の結果をライブ補完候補として出す（denops版 skkeleton の `getCompletionResult()` 相当）。
+
+**設計上の重要な違い（skkeleton用ソースとの比較）**: skkeleton は `▽`/`▼` を実バッファへの直接書き込みで表示するため、実機で運用している `skkeleton_source.lua` は「実テキストの範囲を textEdit で置換する」方式（`getPreEdit()` で得た文字列の長さ分だけ削って新しい単語を挿入する）が使えた。一方 skk.nvim の `▽`/`▼` は extmark（仮想テキスト）表示で、実バッファには何も書き込まれていない。そのため同じ方式は使えず、`blink_source.lua` では textEdit を「今のカーソル位置への空挿入（no-op）」にとどめ、実際の確定処理（extmarkのクリア・個人辞書への記録・実テキストの挿入）は `execute()` から `henkan/state.lua` の `M.confirm_external(reading, has_okuri, word, annotation)` に委譲する。このトレードオフとして、候補を選ぶ前のライブなゴーストテキストプレビューは出せない（メニュー上のラベル表示・選択・確定そのものは問題なく機能する）。
+
+**表示の連動**: `henkan/state.lua` は `▽`/`▼` の状態変化のたびに `User autocmd "SkkHenkanChanged"`（skkeleton の `skkeleton-mode-changed` 相当）を `data.phase`/`data.reading`/`data.has_okuri`/`data.source_mode` 付きで発火する。blink.cmp メニューの show()/hide() 自体はこのソースの責務ではなく、ユーザー設定側でこの autocmd を見て行う想定（実機の `nvim-config-blink-skkeleton` の `skkeleton-mode-changed` ハンドラと同じ考え方）。`▼`（候補選択）中は skk.nvim 自身の候補選択ウィンドウと表示が競合するため、blink.cmp 側は抑止するのが前提。
+
+**送りありの前方一致補完は現時点で提供していない**（`dict.lookup_prefix()` は okuri-nasi のみに絞っている。プロトコル・実用上の理由による）。
+
+**未検証（実機配線待ち）**: コード側（ソース本体・状態通知・確定委譲・単体テスト `tests/blink_source_spec.lua`）は揃っているが、実際に実機の `nvim-config-blink-skkeleton` 側の設定を書き換えて skk.nvim を差し込む配線・動作確認はまだ行っていない（下記「既知の制限」も参照）。
+
 ### モードインジケーター (`mode_indicator.lua`)
 
 モードが切り替わった瞬間（`<C-j>`、または `l`/`q`/`L`）、カーソル位置にフローティングウィンドウでグリフ（`ひら`/`カタ`/`latn`/`ＬＡ`）を表示する。実際に次のキー入力があった時点で消える（`capture.lua` の `on_key()` が毎回呼ぶ `mode_indicator.hide()` が担当する）。
@@ -192,7 +205,7 @@ lua/skk/
   - （技術的コスト）内蔵ターミナルはNeovimの通常のバッファではなくPTYであり、`nvim_buf_set_text()`のような直接書き込みができず、確定した文字列を`chansend()`でPTYにバイト列として送る形になる。未確定のローマ字断片の literal display や `▽`/`▼` のpreedit表示、それを`<BS>`等で書き換える操作を、PTYへのバイト列送出という一方向的な手段だけで安全に実現するのは実装難易度が大きく上がる。実際、[skkeleton](https://github.com/vim-skk/skkeleton)を内蔵ターミナルで試した際、`<C-j>`で有効化はできるものの確定したはずの文字がターミナルに残らない不具合が実機で確認されている。
   - （費用対効果）内蔵ターミナル上で日本語などの長文を入力する機会はもともと少なく、また内蔵ターミナルではシェル補完は効くが`blink.cmp`のような補完エンジンは機能しないため、このプラグインが元々解決しようとした課題（`blink.cmp`との相性、上記「なぜ作るか」参照）にとって内蔵ターミナル対応の価値は薄いと判断した。
 - `<Left>`/`<Right>` などのカーソル移動キーやマウスクリックは、henkan 非アクティブ時の未確定ローマ字バッファについては安全に扱える（`is_target_key` に該当しないキーが来た時点でバッファを無条件にリセットするため、確定済みかなを破壊するようなバイト列破損は起こらない）が、**表示上の不整合**（未確定ローマ字がそのまま残る）は起こりうる。henkan（▽/▼）アクティブ中にこれらのキーが来た場合の挙動は未検証。
-- blink.cmp のネイティブソースとしての統合はまだ行っていない（[nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) で得た知見はそのまま使える見込み）。
+- blink.cmp のネイティブソースとしての統合は、コード側（`blink_source.lua`、`SkkHenkanChanged` 状態通知、確定委譲、単体テスト）は実装済みだが、実機の [nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) への実際の配線・動作確認はまだ行っていない。設計上、送りありの前方一致補完は非対応、候補を選ぶ前のライブなゴーストテキストプレビューも出せない（詳細は上記「blink.cmp ネイティブソース統合」参照）。
 - `egg_like_newline = false`（SKK本来の、確定+改行の動作）は実装・動作確認済みだが、`vim.api.nvim_feedkeys()` で `<CR>` を再注入する方式のため、`<CR>` に他プラグインのマッピングが被っている環境では想定外の相互作用が起こる可能性がある。
 - 候補選択ウィンドウの表示位置自動切替（上下）は `vim.fn.screenpos()` の実測に依存するため、`nvim --headless`（UI未接続）環境ではテストできない（実機での動作確認のみ）。
 - モードラインへのモード表示（現状はカーソル位置への一時的なインジケーターのみ）は未実装。
@@ -262,6 +275,47 @@ dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.emoji", "utf-8")
 
 `skk_test_init.lua` は環境変数 `SKK_SKKSERV_HOST`/`SKK_JISYO_PATHS`（`:` 区切り）/`SKK_JISYO_PATHS_ENCODING` で、この構成をそのまま試せるようにしてある（ファイル冒頭のコメント参照）。
 
+blink.cmp と組み合わせる場合は、`require("skk").setup({ blink = {...} })` で `blink_source.lua` 側の設定（`max_items`、省略時50）を渡した上で、blink.cmp 自体の `sources.providers` にソースとして登録する（登録自体はこのプラグインの外、ユーザー設定側の責務）。`▽`/`▼` に合わせたメニューの表示切替は `SkkHenkanChanged` autocmd を使う（詳細は上記「blink.cmp ネイティブソース統合」参照）:
+
+```lua
+require("skk").setup({
+  blink = { max_items = 50 },
+  -- ...他のオプション
+})
+
+require("blink-cmp").setup({
+  sources = {
+    default = { "skk", "lsp", "path", "snippets", "buffer" },
+    providers = {
+      skk = {
+        name = "skk",
+        module = "skk.blink_source",
+        enabled = function()
+          return require("skk.henkan.state").get_phase() == "midashi"
+        end,
+      },
+    },
+  },
+})
+
+-- ▽/▼ の表示に合わせて blink.cmp のメニューを show()/hide() する。
+-- ▼（候補選択）中は skk.nvim 自身の候補選択ウィンドウが出るため hide() し、
+-- blink.cmp のメニューと競合しないようにする。
+vim.api.nvim_create_autocmd("User", {
+  pattern = "SkkHenkanChanged",
+  callback = function(ev)
+    local phase = ev.data and ev.data.phase
+    if phase == "midashi" then
+      vim.schedule(function()
+        require("blink.cmp").show()
+      end)
+    else
+      require("blink.cmp").hide()
+    end
+  end,
+})
+```
+
 ## 開発時の動作確認
 
 普段の Neovim 設定を汚さずに、このリポジトリ単体で動作確認できる最小 init（`skk_test_init.lua`）を同梱している。
@@ -302,7 +356,7 @@ PLENARY_DIR=~/.local/share/nvim/lazy/plenary.nvim \
 8. ~~個人辞書・学習（recency-based の並び替え）~~ ✅
 9. ~~複数辞書のマージ・skkserv 連携~~ ✅
 10. ~~単語登録（候補が見つからない読みをその場で辞書に追加する）~~ ✅（`vim.fn.input()` の再帰呼び出しによるUI。再帰的な単語登録も可能。実機確認済み、上記「単語登録UI」参照）
-11. blink.cmp ネイティブソースとしての統合
+11. blink.cmp ネイティブソースとしての統合 — コード側（`blink_source.lua`、状態通知、確定委譲、単体テスト）は実装済み。実機の [nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) への配線・動作確認が次のステップ（詳細は上記「blink.cmp ネイティブソース統合」「既知の制限」参照）
 12. ~~周辺 UI（モードインジケーター）~~ ✅（カーソル位置への一時表示のみ。モードライン表示は未着手）
 13. ~~コマンドラインモードへの対応~~ ✅（`target.lua`。ローマ字→かな変換・4モード切替・モードインジケーター・辞書変換（`▽`/`▼`、候補選択ウィンドウ）まで実機確認済み。内蔵ターミナルは非対応と決定、下記「既知の制限」参照）
 14. `vim.uv.new_work()` によるスレッドプール並列パース（大きな辞書の起動負荷をさらに削減）
@@ -313,3 +367,5 @@ PLENARY_DIR=~/.local/share/nvim/lazy/plenary.nvim \
 - [uga-rosa/skk-learning.nvim](https://github.com/uga-rosa/skk-learning.nvim) — Lua での SKK 実装入門
 - [yuys13/skk-develop.nvim](https://github.com/yuys13/skk-develop.nvim) — SKK辞書ダウンローダー
 - [wachikun/yaskkserv2](https://github.com/wachikun/yaskkserv2) — skkserv 連携の実機動作確認に使用したSKKサーバー
+- [Saghen/blink.cmp](https://github.com/Saghen/blink.cmp) — ネイティブソースのAPI（`get_completions`/`execute`/`resolve`、`default_implementation` を自分で呼ぶ必要がある点等）を `blink_source.lua` 実装前に読んで参考にした
+- [nabehan/nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) — 実機で skkeleton + blink.cmp を運用している設定一式。`skkeleton_source.lua`（textEdit の range 計算、`default_implementation` 呼び出し忘れの教訓）や `blink.lua`（`▽`/`▼` に合わせた show()/hide()、`▼` 中の抑止）を `blink_source.lua` 設計時に参考にした
