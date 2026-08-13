@@ -15,6 +15,11 @@
 --                  成功時 server -> client は "1/候補1/候補2/.../\n"（改行終端）。
 --                  失敗時は "4" .. reading .. "\n"（先頭の "1" を "4" に
 --                  変えて改行付きで返す）。
+--   "4" (前方一致検索): client -> server は "4" .. prefix .. " "（"1"と同じく
+--                  スペース終端）。成功時は "1/読み1/読み2/.../\n"（改行終端、
+--                  中身は候補ではなく「読み」の一覧）。実装していない
+--                  サーバーもある（未対応の場合の応答はサーバー依存）。
+--                  okuri-ari/okuri-nasi の区別はプロトコル上存在しない。
 --   "2" (バージョン確認): client -> server は "2" のみ（終端記号なし）。
 --                  server -> client は "A.B "（スペース終端。改行ではない）。
 --   "3" (ホスト名):  "2" と同じ終端規則（未実装のサーバーも多い。
@@ -237,27 +242,15 @@ function M._parse_response(response)
   return candidates
 end
 
---- SKKサーバーへ読みを検索する（同期的な見た目のAPI）。
---- setup() されていない、接続できない、タイムアウトした場合は
---- いずれも空配列を返す（henkan の変換フロー自体は止めない）。
---- 結果の詳細は M.last_status() で確認できる（診断用）。
----@param reading string
----@param has_okuri boolean 送りありの場合、reading は既に送り仮名の
----  子音を含む形（例: "うごk"）。メイン辞書と同じ規約でそのまま送る。
----@return SkkDictCandidate[]
-function M.lookup(reading, has_okuri)
-  if not config then
-    last_status = "not_configured"
-    return {}
-  end
-
-  local query, conv_err = encoding.convert(reading, "utf-8", config.encoding)
-  if not query then
-    last_status = "error"
-    debug_notify("encode failed:", conv_err)
-    return {}
-  end
-
+--- "1"（検索）/ "4"（前方一致検索）共通の、コマンド送信〜応答待ちの
+--- 実装。command_body はコマンド文字も含めた送信文字列そのもの
+--- （例: "1" .. query .. " "、"4" .. query .. " "）。どちらの応答も
+--- "\n" で終端されるので、待ち方は共通化できる。
+--- 戻り値: "\n" 終端まで受信できた生の応答文字列。config 未設定・
+--- 接続失敗・タイムアウトのいずれかなら nil（last_status に理由を残す）。
+---@param command_body string
+---@return string|nil response
+local function send_request_and_wait(command_body)
   local response = nil
   local connect_ok = nil
   local done = false
@@ -303,11 +296,9 @@ function M.lookup(reading, has_okuri)
       return
     end
 
-    debug_notify("send:", "1" .. query .. "<SP>")
+    debug_notify("send:", command_body)
     local ok_write = pcall(function()
-      -- 【重要】"1" コマンドのリクエストはスペース終端（改行ではない）。
-      -- yaskkserv2 の README「SKK protocol memo」参照。
-      client:write("1" .. query .. " ")
+      client:write(command_body)
     end)
     if not ok_write then
       done = true
@@ -321,18 +312,91 @@ function M.lookup(reading, has_okuri)
   if connect_ok == false then
     last_status = "connect_failed"
     debug_notify("connect failed to", config.host .. ":" .. config.port)
-    return {}
+    return nil
   end
 
   if not response then
     last_status = "timeout"
     debug_notify("timeout waiting for response (timeout_ms=" .. config.timeout_ms .. ")")
-    return {}
+    return nil
   end
 
   debug_notify("recv:", response:gsub("\n$", ""))
   last_status = "ok"
+  return response
+end
+
+--- SKKサーバーへ読みを検索する（同期的な見た目のAPI）。
+--- setup() されていない、接続できない、タイムアウトした場合は
+--- いずれも空配列を返す（henkan の変換フロー自体は止めない）。
+--- 結果の詳細は M.last_status() で確認できる（診断用）。
+---@param reading string
+---@param has_okuri boolean 送りありの場合、reading は既に送り仮名の
+---  子音を含む形（例: "うごk"）。メイン辞書と同じ規約でそのまま送る。
+---@return SkkDictCandidate[]
+function M.lookup(reading, has_okuri)
+  if not config then
+    last_status = "not_configured"
+    return {}
+  end
+
+  local query, conv_err = encoding.convert(reading, "utf-8", config.encoding)
+  if not query then
+    last_status = "error"
+    debug_notify("encode failed:", conv_err)
+    return {}
+  end
+
+  -- 【重要】"1" コマンドのリクエストはスペース終端（改行ではない）。
+  -- yaskkserv2 の README「SKK protocol memo」参照。
+  local response = send_request_and_wait("1" .. query .. " ")
+  if not response then
+    return {}
+  end
   return M._parse_response(response)
+end
+
+--- SKKサーバーへ前方一致検索する（"4" コマンド）。伝統的な SKK server
+--- protocol の一部だが、実装していないサーバーも多い
+--- （yaskkserv2・skkserv 本家等は対応。dbskkd-cdb 等は未検証）。
+--- 未対応サーバーの場合は "1" で始まらない応答、または想定外の応答が
+--- 返るだけなので、そのまま空配列を返す（henkan フローは止めない）。
+---@param prefix string
+---@return string[] readings （UTF-8変換済み）
+function M.lookup_prefix(prefix)
+  if not config then
+    last_status = "not_configured"
+    return {}
+  end
+
+  local query, conv_err = encoding.convert(prefix, "utf-8", config.encoding)
+  if not query then
+    last_status = "error"
+    debug_notify("encode failed:", conv_err)
+    return {}
+  end
+
+  local response = send_request_and_wait("4" .. query .. " ")
+  if not response then
+    return {}
+  end
+  return M._parse_prefix_response(response)
+end
+
+--- "4" コマンドの応答文字列 "1/reading1/reading2/.../\n" を
+--- 読みの配列にパースする（"1" で始まらなければ空配列）。
+---@param response string
+---@return string[]
+function M._parse_prefix_response(response)
+  if response:sub(1, 1) ~= "1" then
+    return {}
+  end
+  local body = response:sub(2):gsub("\n$", "")
+  local readings = {}
+  for part in body:gmatch("[^/%s]+") do
+    readings[#readings + 1] = encoding.convert(part, config.encoding, "utf-8") or part
+  end
+  return readings
 end
 
 --- サーバーのバージョン文字列を取得する（"2" コマンド）。エンコーディングに

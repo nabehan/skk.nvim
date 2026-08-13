@@ -80,4 +80,25 @@ describe("user_dict", function()
       end)
     end
   )
+
+  it("lookup_prefix() は前方一致する読みを昇順ソートして返す", function()
+    user_dict.load(tmp_path)
+    user_dict.record_selection("かんじ", false, "漢字", nil)
+    user_dict.record_selection("かんたん", false, "簡単", nil)
+    user_dict.record_selection("き", false, "木", nil)
+
+    local readings = user_dict.lookup_prefix("かん", false, 10)
+    table.sort(readings)
+    assert.are.same({ "かんじ", "かんたん" }, readings)
+  end)
+
+  it("lookup_prefix() は max_results で打ち切り、空文字列 prefix は空配列を返す", function()
+    user_dict.load(tmp_path)
+    user_dict.record_selection("かんじ", false, "漢字", nil)
+    user_dict.record_selection("かんたん", false, "簡単", nil)
+    user_dict.record_selection("かんこう", false, "観光", nil)
+
+    assert.are.equal(2, #user_dict.lookup_prefix("かん", false, 2))
+    assert.are.same({}, user_dict.lookup_prefix("", false, 10))
+  end)
 end)

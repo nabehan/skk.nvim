@@ -56,6 +56,32 @@ function M.lookup(reading, has_okuri)
   return section[reading] or {}
 end
 
+--- 前方一致で読みの一覧を検索する（blink.cmp ネイティブソースの
+--- ライブ補完用）。個人辞書は通常小規模（学習した語のみ）なので、
+--- dict/init.lua の他ソースと違いソート済みインデックスは持たず、
+--- 単純な線形走査で十分と判断している。
+---@param prefix string
+---@param has_okuri boolean
+---@param max_results integer
+---@return string[] readings 前方一致した読み（昇順ソート済み）
+function M.lookup_prefix(prefix, has_okuri, max_results)
+  if prefix == "" then
+    return {}
+  end
+  local section = has_okuri and data.okuri_ari or data.okuri_nasi
+  local result = {}
+  for reading in pairs(section) do
+    if reading:sub(1, #prefix) == prefix then
+      result[#result + 1] = reading
+      if #result >= max_results then
+        break
+      end
+    end
+  end
+  table.sort(result)
+  return result
+end
+
 --- 選択された候補を学習する: その読みの候補一覧の先頭に移動する
 --- （既に個人辞書にあれば削除してから先頭に挿入、無ければ新規挿入）。
 --- M.load() でパスが設定されていなければ何もしない（個人辞書 無効時）。

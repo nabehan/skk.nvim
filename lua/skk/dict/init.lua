@@ -14,12 +14,14 @@ local user_dict = require("skk.dict.user_dict")
 local file_source = require("skk.dict.file_source")
 local jisyo_parser = require("skk.dict.jisyo_parser")
 local skkserv = require("skk.dict.skkserv")
+local prefix_index = require("skk.dict.prefix_index")
 
 local M = {}
 
 ---@class SkkDictSourceHandle
 ---@field name string
 ---@field lookup fun(reading: string, has_okuri: boolean): SkkDictCandidate[]
+---@field prefix_lookup fun(prefix: string, has_okuri: boolean, max_results: integer): string[]
 
 ---@type SkkDictSourceHandle[]
 local sources = {}
@@ -30,11 +32,22 @@ local sources = {}
 ---@param dict { okuri_ari: table<string,SkkDictCandidate[]>, okuri_nasi: table<string,SkkDictCandidate[]> }
 ---@return SkkDictSourceHandle
 local function make_eager_source(name, dict)
+  -- 前方一致検索（M.lookup_prefix()）用に、キー一覧をソートして
+  -- 1回だけ構築しておく。dict テーブル自体は set_dict()/add_dict() で
+  -- 渡された後は書き換わらない前提（追加の辞書は別ソースとして積む）。
+  local sorted_keys = {
+    okuri_ari = prefix_index.build_sorted_keys(dict.okuri_ari),
+    okuri_nasi = prefix_index.build_sorted_keys(dict.okuri_nasi),
+  }
   return {
     name = name,
     lookup = function(reading, has_okuri)
       local bucket = has_okuri and dict.okuri_ari or dict.okuri_nasi
       return bucket[reading] or {}
+    end,
+    prefix_lookup = function(prefix, has_okuri, max_results)
+      local keys = has_okuri and sorted_keys.okuri_ari or sorted_keys.okuri_nasi
+      return prefix_index.prefix_range(keys, prefix, max_results)
     end,
   }
 end
@@ -49,6 +62,13 @@ end
 ---@return SkkDictSourceHandle
 local function make_raw_index_source(name, index)
   local cache = { okuri_ari = {}, okuri_nasi = {} }
+  -- index テーブルはロード完了後は書き換わらない前提（M.lookup_prefix()
+  -- 用に一度だけソート済みキー配列を構築しておく。make_eager_source と
+  -- 同じ理由）。
+  local sorted_keys = {
+    okuri_ari = prefix_index.build_sorted_keys(index.okuri_ari),
+    okuri_nasi = prefix_index.build_sorted_keys(index.okuri_nasi),
+  }
   return {
     name = name,
     lookup = function(reading, has_okuri)
@@ -61,6 +81,10 @@ local function make_raw_index_source(name, index)
       local candidates = raw and jisyo_parser._parse_candidates_string(raw) or {}
       cache[section][reading] = candidates
       return candidates
+    end,
+    prefix_lookup = function(prefix, has_okuri, max_results)
+      local keys = has_okuri and sorted_keys.okuri_ari or sorted_keys.okuri_nasi
+      return prefix_index.prefix_range(keys, prefix, max_results)
     end,
   }
 end
@@ -267,6 +291,68 @@ end
 ---@param annotation string|nil
 function M.record_selection(reading, has_okuri, word, annotation)
   user_dict.record_selection(reading, has_okuri, word, annotation)
+end
+
+--- 前方一致で読みの一覧を検索する（blink.cmp ネイティブソースの
+--- ライブ補完用。`▽` 見出し語入力中に、まだ確定していない読みの
+--- 前方一致候補を出す）。
+---
+--- 【設計】戻り値は候補（SkkDictCandidate）ではなく読み文字列の一覧に
+--- とどめている。呼び出し側が各読みについて改めて M.lookup() を呼んで
+--- 実際の候補一覧を得る想定（該当する読みの件数は通常少ないため、
+--- 二度手間になっても実用上問題にならない。逆に、M.lookup() が既に
+--- 持っている優先順位マージのロジックをここで重複実装せずに済む）。
+---
+--- 送りありの前方一致は、まだ現実的な使い道が薄い（送り仮名の子音まで
+--- 打ち終わらないと reading が定まらないため）ことと、SKKサーバーの
+--- "4" コマンドが okuri-ari/okuri-nasi を区別しないプロトコルである
+--- ことから、has_okuri=true の場合はローカル辞書・個人辞書のみを
+--- 検索し、SKKサーバーへは問い合わせない。
+---@param prefix string
+---@param has_okuri boolean
+---@param max_results integer
+---@return string[] readings 前方一致した読み（重複無し、昇順ソート済み）
+function M.lookup_prefix(prefix, has_okuri, max_results)
+  if prefix == "" then
+    return {}
+  end
+
+  local seen = {}
+  local result = {}
+
+  local function add_all(readings)
+    for _, reading in ipairs(readings) do
+      if not seen[reading] then
+        seen[reading] = true
+        result[#result + 1] = reading
+      end
+    end
+  end
+
+  add_all(user_dict.lookup_prefix(prefix, has_okuri, max_results))
+
+  if not has_okuri and skkserv.is_enabled() then
+    add_all(skkserv.lookup_prefix(prefix))
+  end
+
+  for _, source in ipairs(sources) do
+    if #result >= max_results then
+      break
+    end
+    if source.prefix_lookup then
+      add_all(source.prefix_lookup(prefix, has_okuri, max_results))
+    end
+  end
+
+  table.sort(result)
+  if #result > max_results then
+    local truncated = {}
+    for i = 1, max_results do
+      truncated[i] = result[i]
+    end
+    result = truncated
+  end
+  return result
 end
 
 return M

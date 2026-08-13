@@ -6,9 +6,17 @@ Protocol (per yaskkserv2's README "SKK protocol memo", which documents the
 classic skkserv/skkserv.c behaviour). Note the terminators differ per
 command -- this is the actual real-world protocol, not a guess:
 
-  "1<reading> "  (SPACE terminated, NOT newline)  -> lookup request
+  "1<reading> "  (SPACE terminated, NOT newline)  -> exact lookup request
     -> success response: "1/cand1/cand2/.../\n"   (newline terminated)
     -> not-found response: "4<reading>\n"         (newline terminated)
+  "4<prefix> "   (SPACE terminated, same as "1")  -> completion (prefix
+                 search) request. Distinct from the "4..." NOT-FOUND
+                 response above -- same leading byte, but this one is
+                 client-initiated. Real servers (yaskkserv2, skk_server.c)
+                 support this; skkeleton's skk_server.ts source documents
+                 it as `4<prefix> ` -> `1/reading1/reading2/.../\n`.
+    -> success response: "1/reading1/reading2/.../\n" (readings, not words)
+    -> not-found response: "4<prefix>\n"
   "2"            (no terminator at all)            -> version request
     -> response: "A.B "                            (SPACE terminated)
   "0"            (no terminator)                   -> disconnect, no response
@@ -35,9 +43,10 @@ def handle(conn):
                 return
             buf += chunk
 
-            # "1"/"4" (lookup) はスペース終端、"2"/"3" はコマンド文字1文字のみ
-            # （終端記号なし）、"0" も終端記号なし。
-            if buf[:1] in (b"1", b"4"):
+            # "1"（完全一致検索）/ "4"（前方一致検索）はどちらもスペース
+            # 終端、"2"/"3" はコマンド文字1文字のみ（終端記号なし）、
+            # "0" も終端記号なし。
+            if buf[:1] == b"1":
                 if b" " not in buf:
                     continue  # まだ全体を受信していない
                 line, buf = buf.split(b" ", 1)
@@ -47,6 +56,17 @@ def handle(conn):
                     resp = ("1/" + body + "/\n").encode("euc-jp")
                 else:
                     resp = ("4" + reading + "\n").encode("euc-jp")
+                conn.sendall(resp)
+            elif buf[:1] == b"4":
+                if b" " not in buf:
+                    continue
+                line, buf = buf.split(b" ", 1)
+                prefix = line[1:].decode("euc-jp", errors="replace")
+                matches = sorted(k for k in DICT if k.startswith(prefix)) if prefix else []
+                if matches:
+                    resp = ("1/" + "/".join(matches) + "/\n").encode("euc-jp")
+                else:
+                    resp = ("4" + prefix + "\n").encode("euc-jp")
                 conn.sendall(resp)
             elif buf[:1] == b"2":
                 buf = buf[1:]

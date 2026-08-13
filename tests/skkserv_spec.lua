@@ -126,3 +126,42 @@ describe("skkserv.lookup（フェイクサーバーとの統合テスト、Pytho
     assert.is_true(elapsed < 2000) -- フリーズせずタイムアウトすることの確認（余裕を見て2秒）
   end)
 end)
+
+describe(
+  'skkserv.lookup_prefix（"4"コマンド、フェイクサーバーとの統合テスト、Python3が必要）',
+  function()
+    local job_id
+    local PORT = 12781
+
+    before_each(function()
+      job_id = start_fake_server(PORT)
+    end)
+
+    after_each(function()
+      if job_id then
+        vim.fn.jobstop(job_id)
+      end
+      skkserv.setup(nil)
+    end)
+
+    it("前方一致する読みの一覧を返す（辞書の単語ではなく読みそのもの）", function()
+      if not job_id then
+        pending("python3 が無いのでスキップ")
+        return
+      end
+      skkserv.setup({ host = "127.0.0.1", port = PORT, encoding = "euc-jp", timeout_ms = 1000 })
+      local readings = skkserv.lookup_prefix("か")
+      table.sort(readings)
+      assert.are.same({ "かんじ" }, readings)
+    end)
+
+    it("前方一致しない prefix は空配列を返す", function()
+      if not job_id then
+        pending("python3 が無いのでスキップ")
+        return
+      end
+      skkserv.setup({ host = "127.0.0.1", port = PORT, encoding = "euc-jp", timeout_ms = 1000 })
+      assert.are.same({}, skkserv.lookup_prefix("そんざいしない"))
+    end)
+  end
+)

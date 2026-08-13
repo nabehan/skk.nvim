@@ -299,3 +299,57 @@ describe("dict.add_dictionary_async（複数辞書を非同期で追加）", fun
     assert.are.equal("慣事", candidates[2].word)
   end)
 end)
+
+describe("dict: 前方一致検索 (M.lookup_prefix、blink.cmp ネイティブソース用)", function()
+  before_each(function()
+    dict.set_dict(parser.parse(table.concat({
+      "うごk /動/",
+      "かんじ /漢字/幹事/",
+      "かんたん /簡単/",
+      "かんこう /観光/",
+      "き /木/",
+    }, "\n")))
+    dict.set_user_dict_path(vim.fn.tempname())
+  end)
+
+  it("前方一致する読みを昇順ソートして返す", function()
+    local readings = dict.lookup_prefix("かん", false, 10)
+    table.sort(readings)
+    assert.are.same({ "かんこう", "かんじ", "かんたん" }, readings)
+  end)
+
+  it("前方一致しない prefix は空配列を返す", function()
+    assert.are.same({}, dict.lookup_prefix("ん", false, 10))
+  end)
+
+  it("空文字列の prefix は空配列を返す（辞書全件を返さない）", function()
+    assert.are.same({}, dict.lookup_prefix("", false, 10))
+  end)
+
+  it("max_results で件数を打ち切る", function()
+    local readings = dict.lookup_prefix("かん", false, 2)
+    assert.are.equal(2, #readings)
+  end)
+
+  it("個人辞書で新規に学習した読みも前方一致検索に含まれる", function()
+    dict.record_selection("かんぺき", false, "完璧", nil)
+    local readings = dict.lookup_prefix("かん", false, 10)
+    table.sort(readings)
+    assert.are.same({ "かんこう", "かんじ", "かんたん", "かんぺき" }, readings)
+  end)
+
+  it("送りありの prefix 検索は okuri_ari セクションだけを見る", function()
+    dict.set_dict(parser.parse(table.concat({
+      ";; okuri-ari entries.",
+      "うごk /動/",
+      "うつk /打/移/",
+      ";; okuri-nasi entries.",
+      "き /木/",
+    }, "\n")))
+    local readings = dict.lookup_prefix("う", true, 10)
+    table.sort(readings)
+    assert.are.same({ "うごk", "うつk" }, readings)
+    -- 送りなし側の "き" は含まれない
+    assert.are.same({}, dict.lookup_prefix("き", true, 10))
+  end)
+end)
