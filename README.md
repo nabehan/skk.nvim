@@ -157,6 +157,8 @@ skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブ
 
 **さらに注意4（実機で発見）**: abbrev モード（`/` から始める、見出しが ASCII 文字列そのものになるモード）でも `▽` と同様にライブ補完が効くべきだが、`get_completions()` が `phase == "midashi"` のみを対象にしていたため、abbrev モード中は候補ウィンドウが一切出ない不具合があった。`henkan/state.lua` の実際の変換候補検索（`M.space()`/`M.search()`）は元々 `"midashi"` と `"abbrev"` を対称に扱っており（abbrev では `session.reading` が ASCII 文字列になるだけで、検索キーとして扱う点は同じ）、blink.cmp 側のライブ補完だけこの対称性が崩れていた。`get_completions()` の phase 判定に `"abbrev"` を追加して修正済み。ユーザー設定側の `enabled()` と `SkkHenkanChanged` ハンドラの phase 判定にも、同様に `"abbrev"` を含める必要がある（上の「使い方」のサンプルコード参照）。
 
+**SKKサーバーをライブ補完にも含める**: 既定では `skip_skkserv=true` で、`▽`/`▼` のライブ補完は個人辞書・ローカル辞書のみで完結させている（上の「さらに注意」参照。SKKサーバーを含めるとキー入力のたびに最大 `max_items+1` 回の同期TCPラウンドトリップが発生しうるため）。実際どの程度の体感になるかは辞書構成やSKKサーバーの実装・応答速度に依存するので、`require("skk").setup({ blink = { skip_skkserv = false } })` で無効化し、SKKサーバーの候補もライブ補完に含めて試すことができる。
+
 **送りありの前方一致補完は現時点で提供していない**（`dict.lookup_prefix()` は okuri-nasi のみに絞っている。プロトコル・実用上の理由による）。
 
 **未検証（実機配線待ち）**: コード側（ソース本体・状態通知・確定委譲・単体テスト `tests/blink_source_spec.lua`）は揃っているが、実際に実機の `nvim-config-blink-skkeleton` 側の設定を書き換えて skk.nvim を差し込む配線・動作確認はまだ行っていない（下記「既知の制限」も参照）。

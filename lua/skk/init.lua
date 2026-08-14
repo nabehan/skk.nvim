@@ -39,10 +39,15 @@ local M = {}
 ---  文字コード。伝統的な skkserv は EUC-JP が主流）。timeout_ms は1回の検索の待ち時間上限
 ---  （省略時 300）。debug は送受信の生データを vim.notify() で出力するか（省略時 false）。
 ---  個人辞書の次、ローカル辞書より先にマージされる。
----@field blink { max_items: integer }? blink.cmp ネイティブソース（lua/skk/blink_source.lua）の
----  設定。`▽` 見出し語入力中の前方一致ライブ補完で、1回の検索あたり何件までアイテムを
----  出すか。デフォルト 50。ソース自体の登録（blink.cmp の setup() の sources.providers）は
----  ユーザーの設定側で行う必要がある（README.md の「blink.cmp 連携」参照）。
+---@field blink { max_items: integer, skip_skkserv: boolean, debug_timing: boolean }? blink.cmp ネイティブ
+---  ソース（lua/skk/blink_source.lua）の設定。`▽`/`▼` 見出し語入力中の前方一致ライブ補完で、
+---  max_items は1回の検索あたり何件までアイテムを出すか（デフォルト 50）。skip_skkserv は
+---  ライブ補完で SKKサーバーへの問い合わせを省略するか（デフォルト true。SKKサーバーを含めると
+---  キー入力のたびに最大 max_items+1 回の同期TCPラウンドトリップが発生しうるため、既定では
+---  個人辞書・ローカル辞書のみで完結させている。false にすると SKKサーバーの候補もライブ補完に
+---  含める）。debug_timing は get_completions() 1回あたりの所要時間を vim.notify() に出す
+---  調査用オプション（デフォルト false）。ソース自体の登録（blink.cmp の setup() の
+---  sources.providers）はユーザーの設定側で行う必要がある（README.md の「blink.cmp 連携」参照）。
 ---@field dictionaries { path: string, encoding: string?, name: string? }[]? ローカル辞書ファイルの
 ---  一覧。登録順が優先順位になる（先に書いたものが優先される。個人辞書・skkserv の次に
 ---  マージされる）。各エントリの encoding は省略時 "euc-jp"。name は省略時 path
