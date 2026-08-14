@@ -129,9 +129,27 @@ function source:get_completions(_, callback)
   -- 【textEdit について】上部のコメント参照。実際には何も編集しない
   -- （newText=""、range は今のカーソル位置ぴったりのゼロ幅）no-op にし、
   -- 実際の確定処理は execute() に委譲する。
-  local win = vim.api.nvim_win_get_cursor(0)
-  local row0 = win[1] - 1
-  local col = win[2]
+  --
+  -- 【重要・実機で発見】range の計算はコマンドラインモードかどうかで
+  -- 分岐させる必要がある。skk.nvim の enter_key は挿入モードだけでなく
+  -- コマンドラインモード（単語登録UIの vim.fn.input() 等）にもマップして
+  -- いるため、コマンドラインモード中に ▽ 変換が行われることがある。
+  -- blink.cmp 自身の trigger/context.lua は「コマンドラインモードでは
+  -- 行番号は常に 0（vim.fn.getcmdline() 相当）」という前提を置いており
+  -- （context.get_cursor()/get_line() 参照）、ここで通常バッファの行番号
+  -- （nvim_win_get_cursor(0) の行）をそのまま使うと、後続の候補プレビュー
+  -- 処理（accept/preview.lua 等）が「Cannot get line number N in cmdline
+  -- mode. Only 0 is supported」という assert エラーで落ちる（実機で確認）。
+  local is_cmdline = vim.api.nvim_get_mode().mode == "c"
+  local row0, col
+  if is_cmdline then
+    row0 = 0
+    col = vim.fn.getcmdpos() - 1
+  else
+    local win = vim.api.nvim_win_get_cursor(0)
+    row0 = win[1] - 1
+    col = win[2]
+  end
   local range = {
     start = { line = row0, character = col },
     ["end"] = { line = row0, character = col },
