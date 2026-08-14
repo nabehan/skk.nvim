@@ -149,6 +149,8 @@ skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブ
 
 **表示の連動**: `henkan/state.lua` は `▽`/`▼` の状態変化のたびに `User autocmd "SkkHenkanChanged"`（skkeleton の `skkeleton-mode-changed` 相当）を `data.phase`/`data.reading`/`data.has_okuri`/`data.source_mode` 付きで発火する。blink.cmp メニューの show()/hide() 自体はこのソースの責務ではなく、ユーザー設定側でこの autocmd を見て行う想定（実機の `nvim-config-blink-skkeleton` の `skkeleton-mode-changed` ハンドラと同じ考え方）。`▼`（候補選択）中は skk.nvim 自身の候補選択ウィンドウと表示が競合するため、blink.cmp 側は抑止するのが前提。
 
+**さらに注意（実機で発見）**: `▽` の間、読みが1文字変わるたびに上記の `SkkHenkanChanged` は毎回発火するが、blink.cmp の `show()` は「メニューが既に開いていて `providers` を指定しない場合は何もしない」というガードを持つ。skkeleton なら実バッファのテキストが変化するので blink.cmp 自身の自動再取得の仕組みに乗れるが、skk.nvim の `▽`/`▼` は extmark 表示で実バッファが変化しないため、その仕組みには乗れない。ユーザー設定側で `show()` を呼ぶときは必ず `providers = { "skk" }` を明示し、メニューが開いているかどうかに関わらず毎回強制的に再トリガーする必要がある（省略すると、▽に入った直後の1回目でメニューが開いた後、読みが伸びても候補リストが更新されないまま止まる）。詳細は下記「使い方」のサンプルコードを参照。
+
 **送りありの前方一致補完は現時点で提供していない**（`dict.lookup_prefix()` は okuri-nasi のみに絞っている。プロトコル・実用上の理由による）。
 
 **未検証（実機配線待ち）**: コード側（ソース本体・状態通知・確定委譲・単体テスト `tests/blink_source_spec.lua`）は揃っているが、実際に実機の `nvim-config-blink-skkeleton` 側の設定を書き換えて skk.nvim を差し込む配線・動作確認はまだ行っていない（下記「既知の制限」も参照）。
@@ -205,7 +207,7 @@ skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブ
   - （技術的コスト）内蔵ターミナルはNeovimの通常のバッファではなくPTYであり、`nvim_buf_set_text()`のような直接書き込みができず、確定した文字列を`chansend()`でPTYにバイト列として送る形になる。未確定のローマ字断片の literal display や `▽`/`▼` のpreedit表示、それを`<BS>`等で書き換える操作を、PTYへのバイト列送出という一方向的な手段だけで安全に実現するのは実装難易度が大きく上がる。実際、[skkeleton](https://github.com/vim-skk/skkeleton)を内蔵ターミナルで試した際、`<C-j>`で有効化はできるものの確定したはずの文字がターミナルに残らない不具合が実機で確認されている。
   - （費用対効果）内蔵ターミナル上で日本語などの長文を入力する機会はもともと少なく、また内蔵ターミナルではシェル補完は効くが`blink.cmp`のような補完エンジンは機能しないため、このプラグインが元々解決しようとした課題（`blink.cmp`との相性、上記「なぜ作るか」参照）にとって内蔵ターミナル対応の価値は薄いと判断した。
 - `<Left>`/`<Right>` などのカーソル移動キーやマウスクリックは、henkan 非アクティブ時の未確定ローマ字バッファについては安全に扱える（`is_target_key` に該当しないキーが来た時点でバッファを無条件にリセットするため、確定済みかなを破壊するようなバイト列破損は起こらない）が、**表示上の不整合**（未確定ローマ字がそのまま残る）は起こりうる。henkan（▽/▼）アクティブ中にこれらのキーが来た場合の挙動は未検証。
-- blink.cmp のネイティブソースとしての統合は、コード側（`blink_source.lua`、`SkkHenkanChanged` 状態通知、確定委譲、単体テスト）は実装済みだが、実機の [nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) への実際の配線・動作確認はまだ行っていない。設計上、送りありの前方一致補完は非対応、候補を選ぶ前のライブなゴーストテキストプレビューも出せない（詳細は上記「blink.cmp ネイティブソース統合」参照）。
+- blink.cmp のネイティブソースとしての統合は、コード側（`blink_source.lua`、`SkkHenkanChanged` 状態通知、確定委譲、単体テスト）は実装済み。独立したサンドボックス環境（[nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox)）での動作確認は完了し、その過程で見つかった `show()` 再トリガーの不具合（上記「blink.cmp ネイティブソース統合」の「さらに注意」参照）も修正済み。ただし実機の日常設定 [nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) への実際の配線・動作確認はまだ行っていない。設計上、送りありの前方一致補完は非対応、候補を選ぶ前のライブなゴーストテキストプレビューも出せない。
 - `egg_like_newline = false`（SKK本来の、確定+改行の動作）は実装・動作確認済みだが、`vim.api.nvim_feedkeys()` で `<CR>` を再注入する方式のため、`<CR>` に他プラグインのマッピングが被っている環境では想定外の相互作用が起こる可能性がある。
 - 候補選択ウィンドウの表示位置自動切替（上下）は `vim.fn.screenpos()` の実測に依存するため、`nvim --headless`（UI未接続）環境ではテストできない（実機での動作確認のみ）。
 - モードラインへのモード表示（現状はカーソル位置への一時的なインジケーターのみ）は未実装。
@@ -322,13 +324,22 @@ require("blink-cmp").setup({
 -- ▽/▼ の表示に合わせて blink.cmp のメニューを show()/hide() する。
 -- ▼（候補選択）中は skk.nvim 自身の候補選択ウィンドウが出るため hide() し、
 -- blink.cmp のメニューと競合しないようにする。
+--
+-- 【重要】show() には必ず providers = { "skk" } を明示すること。
+-- blink.cmp の show() は「メニューが既に開いていて providers を
+-- 指定しない場合は何もしない」というガードを持つ。skk.nvim の ▽/▼ は
+-- extmark（仮想テキスト）表示で実バッファは変化しないため、blink.cmp
+-- 自身の「実テキストの変更を検知して自動的に再要求する」通常の仕組みは
+-- 働かない。providers を省略すると、▽に入った直後（読みが空文字）の
+-- 1回目でメニューが開いた後、読みが伸びても2回目以降の show() が
+-- 無視され、候補リストが更新されないまま止まってしまう。
 vim.api.nvim_create_autocmd("User", {
   pattern = "SkkHenkanChanged",
   callback = function(ev)
     local phase = ev.data and ev.data.phase
     if phase == "midashi" then
       vim.schedule(function()
-        require("blink.cmp").show()
+        require("blink.cmp").show({ providers = { "skk" } })
       end)
     else
       require("blink.cmp").hide()
