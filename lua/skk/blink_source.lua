@@ -49,14 +49,17 @@ source.__index = source
 
 --- require("skk").setup({ blink = { ... } }) から lua/skk/init.lua 経由で
 --- 差し込まれる設定。
----@type { max_items: integer }
-local config = { max_items = 50 }
+---@type { max_items: integer, debug_timing: boolean }
+local config = { max_items = 50, debug_timing = false }
 
----@param opts { max_items: integer? }|nil
+---@param opts { max_items: integer?, debug_timing: boolean? }|nil
 function source.setup(opts)
   opts = opts or {}
   if opts.max_items ~= nil then
     config.max_items = opts.max_items
+  end
+  if opts.debug_timing ~= nil then
+    config.debug_timing = opts.debug_timing
   end
 end
 
@@ -85,10 +88,40 @@ function source:get_completions(_, callback)
     return function() end
   end
 
+  -- 【暫定の計測ログ】require("skk").setup({ blink = { debug_timing = true } })
+  -- で有効化すると、この get_completions() 1回あたりの所要時間（全体・
+  -- lookup_prefix・lookup ループの内訳）を vim.notify() に出す。原因調査用
+  -- の一時的なコードなので、原因が特定でき次第削除する。
+  local t_start = config.debug_timing and vim.loop.hrtime() or nil
+  local t_after_prefix
+
   -- 送りありの前方一致補完は現時点で提供していない（dict.lookup_prefix()
   -- の設計を参照。プロトコル・実用上の理由で okuri-nasi のみに絞っている）。
-  local ok, readings = pcall(dict.lookup_prefix, reading, false, config.max_items)
+  --
+  -- 【重要】skip_skkserv=true を指定する。SKKサーバーを含めてしまうと、
+  -- この関数自体が "4" コマンドで1回、さらに下のループで見つかった読みの
+  -- 件数（最大 max_items 件）だけ "1" コマンドが飛ぶため、キー入力の
+  -- たびに最大 max_items+1 回もの同期TCPラウンドトリップが発生し、
+  -- 体感できるレベルで重くなる（実機で発見。詳細は
+  -- lua/skk/dict/init.lua の M.lookup_prefix() のコメント参照）。
+  -- ライブ補完は個人辞書・ローカル辞書のみで完結させ、SKKサーバーを
+  -- 含めた完全な検索は実際の変換確定操作（スペースキー）でのみ行う。
+  local ok, readings = pcall(dict.lookup_prefix, reading, false, config.max_items, true)
+  if t_start then
+    t_after_prefix = vim.loop.hrtime()
+  end
   if not ok or not readings or #readings == 0 then
+    if t_start then
+      vim.schedule(function()
+        vim.notify(
+          string.format(
+            "[skk.nvim timing] reading=%s lookup_prefix=%.1fms (0 readings)",
+            reading,
+            (t_after_prefix - t_start) / 1e6
+          )
+        )
+      end)
+    end
     callback({ items = {}, is_incomplete_forward = true, is_incomplete_backward = true })
     return function() end
   end
@@ -109,7 +142,7 @@ function source:get_completions(_, callback)
   local rank = 0
 
   for _, full_reading in ipairs(readings) do
-    local candidates = dict.lookup(full_reading, false)
+    local candidates = dict.lookup(full_reading, false, true) -- skip_skkserv=true。上のコメント参照。
     for _, cand in ipairs(candidates) do
       rank = rank + 1
       table.insert(items, {
@@ -125,6 +158,23 @@ function source:get_completions(_, callback)
         data = { reading = full_reading, word = cand.word, annotation = cand.annotation },
       })
     end
+  end
+
+  if t_start then
+    local t_end = vim.loop.hrtime()
+    vim.schedule(function()
+      vim.notify(
+        string.format(
+          "[skk.nvim timing] reading=%s readings=%d items=%d lookup_prefix=%.1fms lookup_loop=%.1fms total=%.1fms",
+          reading,
+          #readings,
+          #items,
+          (t_after_prefix - t_start) / 1e6,
+          (t_end - t_after_prefix) / 1e6,
+          (t_end - t_start) / 1e6
+        )
+      )
+    end)
   end
 
   callback({ items = items, is_incomplete_forward = true, is_incomplete_backward = true })

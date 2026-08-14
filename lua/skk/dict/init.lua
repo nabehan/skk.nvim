@@ -265,14 +265,18 @@ end
 --- word が重複する候補は、優先順位が高い方だけを残す。
 ---@param reading string 送りなしの場合は読みそのもの、送りありの場合は reading..okuri_consonant（例: "うごk"）
 ---@param has_okuri boolean
+---@param skip_skkserv boolean|nil true の場合、SKKサーバーへは問い合わせない
+---  （個人辞書・ローカル辞書ソースのみを検索する）。省略時 false。
+---  blink.cmp のライブ補完（blink_source.lua）専用のオプション。
+---  詳細は下記コメント参照。
 ---@return SkkDictCandidate[] candidates 見つからなければ空配列。各要素は {word, annotation} のテーブル。
-function M.lookup(reading, has_okuri)
+function M.lookup(reading, has_okuri, skip_skkserv)
   local merged = {}
   local seen = {}
 
   merge_into_result(merged, seen, user_dict.lookup(reading, has_okuri))
 
-  if skkserv.is_enabled() then
+  if not skip_skkserv and skkserv.is_enabled() then
     merge_into_result(merged, seen, skkserv.lookup(reading, has_okuri))
   end
 
@@ -299,20 +303,33 @@ end
 ---
 --- 【設計】戻り値は候補（SkkDictCandidate）ではなく読み文字列の一覧に
 --- とどめている。呼び出し側が各読みについて改めて M.lookup() を呼んで
---- 実際の候補一覧を得る想定（該当する読みの件数は通常少ないため、
---- 二度手間になっても実用上問題にならない。逆に、M.lookup() が既に
---- 持っている優先順位マージのロジックをここで重複実装せずに済む）。
+--- 実際の候補一覧を得る想定（M.lookup() が既に持っている優先順位
+--- マージのロジックをここで重複実装せずに済むため）。
+---
+--- 【実機で発見した重要な注意】上の「二度手間」は、個人辞書・ローカル
+--- 辞書だけなら実用上問題にならないが、SKKサーバーが有効だと話が別。
+--- M.lookup_prefix() 自体が "4" コマンドで1回、さらに呼び出し側が
+--- 読みの件数（最大 max_results 件、既定50件）だけ M.lookup() を呼ぶと
+--- そのたびに "1" コマンドが飛ぶため、キー入力のたびに最大 51 回もの
+--- 同期TCPラウンドトリップが発生し、体感できるレベルで重くなる
+--- （skkserv.lua の M.lookup()/M.lookup_prefix() は vim.wait() で
+--- ポーリング待機する同期ラッパーのため）。そのため
+--- blink_source.lua は skip_skkserv=true を指定し、ライブ補完では
+--- SKKサーバーに一切問い合わせない（個人辞書・ローカル辞書のみで
+--- 完結させる）。SKKサーバーを含めた完全な検索は、実際の変換確定操作
+--- （スペースキーでの▼への遷移）でのみ行われる。
 ---
 --- 送りありの前方一致は、まだ現実的な使い道が薄い（送り仮名の子音まで
 --- 打ち終わらないと reading が定まらないため）ことと、SKKサーバーの
 --- "4" コマンドが okuri-ari/okuri-nasi を区別しないプロトコルである
---- ことから、has_okuri=true の場合はローカル辞書・個人辞書のみを
---- 検索し、SKKサーバーへは問い合わせない。
+--- ことから、has_okuri=true の場合はそもそもローカル辞書・個人辞書のみを
+--- 検索し、SKKサーバーへは問い合わせない（skip_skkserv の値に関わらず）。
 ---@param prefix string
 ---@param has_okuri boolean
 ---@param max_results integer
+---@param skip_skkserv boolean|nil true の場合、SKKサーバーへは問い合わせない。省略時 false。
 ---@return string[] readings 前方一致した読み（重複無し、昇順ソート済み）
-function M.lookup_prefix(prefix, has_okuri, max_results)
+function M.lookup_prefix(prefix, has_okuri, max_results, skip_skkserv)
   if prefix == "" then
     return {}
   end
@@ -331,7 +348,7 @@ function M.lookup_prefix(prefix, has_okuri, max_results)
 
   add_all(user_dict.lookup_prefix(prefix, has_okuri, max_results))
 
-  if not has_okuri and skkserv.is_enabled() then
+  if not has_okuri and not skip_skkserv and skkserv.is_enabled() then
     add_all(skkserv.lookup_prefix(prefix))
   end
 
