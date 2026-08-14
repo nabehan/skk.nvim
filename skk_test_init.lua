@@ -47,32 +47,43 @@ local setup_opts = {
   -- 作る。本番の既定値は "~/.local/share/skk/SKK-JISYO.user"
   -- （lua/skk/init.lua 参照）。
   user_dictionary = vim.fn.getcwd() .. "/SKK-JISYO.user",
-}
 
--- 読み込む辞書ファイル。上から順に優先順位が高い（先に登録したものが
--- 優先され、word が重複する候補は後のファイルの分は無視される）。
--- 実機の skkeleton globalDictionaries 相当。空にすると、下の組み込みの
--- 小さな確認用辞書が使われる。
----@type { path: string, encoding: string }[]
-local dictionaries = {
-  -- { path = "/usr/share/skk/SKK-JISYO.L", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.mazegaki", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.requested", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.pubdic+", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.law", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.assoc", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.propernoun", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.station", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.geo", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.fullname", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.JIS2", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.itaiji", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.okinawa", encoding = "euc-jp" },
-  -- { path = "/usr/share/skk/SKK-JISYO.china_taiwan", encoding = "euc-jp" },
-  -- { path = "/usr/local/share/skk/SKK-JISYO.LL.utf8", encoding = "utf-8" },
-  { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
-  { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
-  { path = "/usr/local/share/skk/SKK-JISYO.emoji-ja", encoding = "utf-8" },
+  -- 読み込む辞書ファイル。上から順に優先順位が高い（先に登録したものが
+  -- 優先され、word が重複する候補は後のファイルの分は無視される）。
+  -- 実機の skkeleton globalDictionaries 相当。空にすると、下でこの
+  -- ファイル自身が組み込みの小さな確認用辞書を代わりに読み込む。
+  ---@type { path: string, encoding: string }[]
+  dictionaries = {
+    -- { path = "/usr/share/skk/SKK-JISYO.L", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.mazegaki", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.requested", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.pubdic+", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.law", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.assoc", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.propernoun", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.station", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.geo", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.fullname", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.JIS2", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.itaiji", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.okinawa", encoding = "euc-jp" },
+    -- { path = "/usr/share/skk/SKK-JISYO.china_taiwan", encoding = "euc-jp" },
+    -- { path = "/usr/local/share/skk/SKK-JISYO.LL.utf8", encoding = "utf-8" },
+    { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
+    { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
+    { path = "/usr/local/share/skk/SKK-JISYO.emoji-ja", encoding = "utf-8" },
+  },
+
+  -- dictionaries の各エントリの読み込みが完了するたびに呼ばれる。
+  on_dictionary_loaded = function(path, ok, err)
+    vim.schedule(function()
+      if ok then
+        vim.notify("skk.nvim: dictionary loaded: " .. path)
+      else
+        vim.notify("skk.nvim: failed to load " .. path .. ": " .. tostring(err), vim.log.levels.WARN)
+      end
+    end)
+  end,
 }
 
 -- ===================================================================
@@ -98,39 +109,31 @@ do
 
   local env_path = os.getenv("SKK_JISYO_PATH")
   if env_path then
-    table.insert(dictionaries, { path = env_path, encoding = os.getenv("SKK_JISYO_ENCODING") or "euc-jp" })
+    table.insert(setup_opts.dictionaries, { path = env_path, encoding = os.getenv("SKK_JISYO_ENCODING") or "euc-jp" })
   end
 
   local env_paths = os.getenv("SKK_JISYO_PATHS")
   if env_paths then
     local enc = os.getenv("SKK_JISYO_PATHS_ENCODING") or "utf-8"
     for path in env_paths:gmatch("[^:]+") do
-      table.insert(dictionaries, { path = path, encoding = enc })
+      table.insert(setup_opts.dictionaries, { path = path, encoding = enc })
     end
   end
 end
 
+-- dictionaries が空なら、setup() には渡さず組み込みの小さな確認用辞書を
+-- 代わりに読み込む（skk.nvim 本体の setup() には無い、この試験スクリプト
+-- だけの便宜機能）。
+local use_mini_jisyo = #setup_opts.dictionaries == 0
+if use_mini_jisyo then
+  setup_opts.dictionaries = nil
+end
+
 require("skk").setup(setup_opts)
 
--- ===================================================================
--- 辞書の読み込み（上の dictionaries テーブルに基づく）
--- ===================================================================
-local dict = require("skk.dict")
-local parser = require("skk.dict.jisyo_parser")
-
-if #dictionaries > 0 then
-  for _, entry in ipairs(dictionaries) do
-    dict.add_dictionary_async(entry.path, entry.encoding, function(ok, err)
-      vim.schedule(function()
-        if ok then
-          vim.notify("skk.nvim: dictionary loaded: " .. entry.path)
-        else
-          vim.notify("skk.nvim: failed to load " .. entry.path .. ": " .. tostring(err), vim.log.levels.WARN)
-        end
-      end)
-    end, nil, entry.path)
-  end
-else
+if use_mini_jisyo then
+  local dict = require("skk.dict")
+  local parser = require("skk.dict.jisyo_parser")
   -- 動作確認用の小さな組み込み辞書（送りなし・送りあり両方のサンプルを含む）
   local mini_jisyo = table.concat({
     ";; okuri-ari entries.",
@@ -152,6 +155,7 @@ end
 
 -- SKKサーバーの疎通確認（設定されていれば、バージョン文字列を表示する）。
 if setup_opts.skkserv then
+  local dict = require("skk.dict")
   vim.schedule(function()
     local version = dict.skkserv_version()
     if version then

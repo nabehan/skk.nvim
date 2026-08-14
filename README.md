@@ -273,6 +273,27 @@ dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.edict2", "utf-8")
 dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.emoji", "utf-8")
 ```
 
+同じ構成は `setup()` の `dictionaries` オプションだけでも書ける（`dict.add_dictionary_async()` を登録順に呼ぶのを `setup()` が代行するだけなので、優先順位や非同期・遅延パースといった挙動は上の書き方と全く同じ）。`setup()` 呼び出しが一箇所にまとまるので、`config = function() ... end` 内を短く保ちたい場合に使うとよい:
+
+```lua
+require("skk").setup({
+  skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" },
+  dictionaries = {
+    { path = "/usr/share/skk/SKK-JISYO.L", encoding = "euc-jp" }, -- メイン辞書
+    { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
+    { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
+  },
+  on_dictionary_loaded = function(path, ok, err) -- 省略可。読み込み完了のたびに呼ばれる
+    if not ok then
+      vim.notify("skk.nvim: " .. path .. " の読み込みに失敗: " .. tostring(err), vim.log.levels.WARN)
+    end
+  end,
+  -- ...他のオプション
+})
+```
+
+`dictionaries` は常に `add_dictionary_async()`（非同期・遅延パース、複数辞書の追加登録）を使う。1件目からメイン辞書として `load_dictionary_async()` を使いたい場合（＝2件目以降を追加した時点で1件目を丸ごと置き換えたい場合）は、引き続き上の `dict.load_dictionary_async()` を直接呼ぶ書き方を使う。
+
 `skk_test_init.lua` は環境変数 `SKK_SKKSERV_HOST`/`SKK_JISYO_PATHS`（`:` 区切り）/`SKK_JISYO_PATHS_ENCODING` で、この構成をそのまま試せるようにしてある（ファイル冒頭のコメント参照）。
 
 blink.cmp と組み合わせる場合は、`require("skk").setup({ blink = {...} })` で `blink_source.lua` 側の設定（`max_items`、省略時50）を渡した上で、blink.cmp 自体の `sources.providers` にソースとして登録する（登録自体はこのプラグインの外、ユーザー設定側の責務）。`▽`/`▼` に合わせたメニューの表示切替は `SkkHenkanChanged` autocmd を使う（詳細は上記「blink.cmp ネイティブソース統合」参照）:

@@ -43,6 +43,15 @@ local M = {}
 ---  設定。`▽` 見出し語入力中の前方一致ライブ補完で、1回の検索あたり何件までアイテムを
 ---  出すか。デフォルト 50。ソース自体の登録（blink.cmp の setup() の sources.providers）は
 ---  ユーザーの設定側で行う必要がある（README.md の「blink.cmp 連携」参照）。
+---@field dictionaries { path: string, encoding: string?, name: string? }[]? ローカル辞書ファイルの
+---  一覧。登録順が優先順位になる（先に書いたものが優先される。個人辞書・skkserv の次に
+---  マージされる）。各エントリの encoding は省略時 "euc-jp"。name は省略時 path
+---  （dict.add_dictionary_async() のソース名にそのまま渡る）。読み込みは M.setup() を
+---  呼んだ時点で非同期に開始され、起動をブロックしない。結果は on_dictionary_loaded
+---  で受け取れる。
+---@field on_dictionary_loaded fun(path: string, ok: boolean, err: string|nil)? dictionaries の
+---  各エントリの読み込みが完了するたびに呼ばれる（成功・失敗いずれも）。vim.notify() 等で
+---  進捗を表示したい場合に使う（省略可）。
 
 --- ▽/▼ 表示用のハイライトグループのデフォルトを定義する。
 --- 既にユーザーやカラースキームが定義済みなら上書きしない (default = true)。
@@ -70,6 +79,19 @@ function M.setup(opts)
   dict.set_user_dict_path(user_dictionary)
   if opts.skkserv then
     dict.set_skkserv(opts.skkserv)
+  end
+
+  -- ローカル辞書ファイルの読み込み。登録順（呼んだ順）が優先順位になる
+  -- （add_dictionary_async() 自体がその保証をしている。詳細は
+  -- lua/skk/dict/init.lua の add_dictionary_async() のコメント参照）。
+  if opts.dictionaries then
+    for _, entry in ipairs(opts.dictionaries) do
+      dict.add_dictionary_async(entry.path, entry.encoding, function(ok, err)
+        if opts.on_dictionary_loaded then
+          opts.on_dictionary_loaded(entry.path, ok, err)
+        end
+      end, nil, entry.name)
+    end
   end
 
   -- blink.cmp ネイティブソースの設定だけここで受け取る（ソース自体の
