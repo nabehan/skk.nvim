@@ -16,7 +16,8 @@
 --         name = "skk",
 --         module = "skk.blink_source",
 --         enabled = function()
---           return require("skk.henkan.state").get_phase() == "midashi"
+--           local phase = require("skk.henkan.state").get_phase()
+--           return phase == "midashi" or phase == "abbrev"
 --         end,
 --       },
 --     },
@@ -77,7 +78,14 @@ function source:get_completions(_, callback)
   local henkan_state = require("skk.henkan.state")
   local dict = require("skk.dict")
 
-  if henkan_state.get_phase() ~= "midashi" then
+  -- 【重要・実機で発見】abbrev モード（"/" 開始、見出しがASCII文字列その
+  -- ものになる）も対象にする。henkan/state.lua の実際の変換候補検索
+  -- （M.space()/M.search()）は "midashi" と "abbrev" を対称に扱っており
+  -- （abbrev では session.reading が ASCII 文字列になるだけで、検索キー
+  -- として扱う点は同じ）、blink.cmp 側のライブ補完だけ "midashi" 限定に
+  -- していたため、abbrev モードで候補ウィンドウが一切出ない不具合があった。
+  local phase = henkan_state.get_phase()
+  if phase ~= "midashi" and phase ~= "abbrev" then
     callback({ items = {}, is_incomplete_forward = false, is_incomplete_backward = false })
     return function() end
   end

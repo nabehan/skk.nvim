@@ -155,6 +155,8 @@ skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブ
 
 **さらに注意3（実機で発見・重要）**: blink.cmp 本体は、どのソースの候補であっても一律に「実バッファのカーソル位置から独自に抽出した『キーワード』」を問い合わせ文字列として、各候補の `filterText`（無ければ `label`）に対してファジーマッチをかける（`completion/list.lua` の `list.fuzzy()`）。これは `is_incomplete_forward`/`is_incomplete_backward` の指定に関わらず必ず行われ、ソース側でバイパスする公式な手段は無い。この抽出は Unicode の「文字」カテゴリ（漢字を含む）を対象にしているため、カーソル直前に実テキストとして漢字や英数字が続いていると、それが丸ごと「キーワード」として抽出される。抽出された文字列（例：「漢字」）とこちらが返すかな漢字変換候補（`filterText = "かん"` 等）はほぼ一致しないため、フィルタで全滅し候補ウィンドウ自体が開かない（間に半角スペースを挟むとキーワードが空文字列になり単に全件通過するだけなので症状が出ない）。対策として `lua/skk/blink_source.lua` は blink.cmp 自身が実際に抽出するのと同じ関数（`blink.cmp.fuzzy.get_keyword_range()`）を呼んで抽出結果を先読みし、`filterText` の先頭に前置している（blink.cmp の非公開に近い内部実装に依存しているため、blink.cmp のアップデートで壊れる可能性がある。`pcall` で保護済み）。
 
+**さらに注意4（実機で発見）**: abbrev モード（`/` から始める、見出しが ASCII 文字列そのものになるモード）でも `▽` と同様にライブ補完が効くべきだが、`get_completions()` が `phase == "midashi"` のみを対象にしていたため、abbrev モード中は候補ウィンドウが一切出ない不具合があった。`henkan/state.lua` の実際の変換候補検索（`M.space()`/`M.search()`）は元々 `"midashi"` と `"abbrev"` を対称に扱っており（abbrev では `session.reading` が ASCII 文字列になるだけで、検索キーとして扱う点は同じ）、blink.cmp 側のライブ補完だけこの対称性が崩れていた。`get_completions()` の phase 判定に `"abbrev"` を追加して修正済み。ユーザー設定側の `enabled()` と `SkkHenkanChanged` ハンドラの phase 判定にも、同様に `"abbrev"` を含める必要がある（上の「使い方」のサンプルコード参照）。
+
 **送りありの前方一致補完は現時点で提供していない**（`dict.lookup_prefix()` は okuri-nasi のみに絞っている。プロトコル・実用上の理由による）。
 
 **未検証（実機配線待ち）**: コード側（ソース本体・状態通知・確定委譲・単体テスト `tests/blink_source_spec.lua`）は揃っているが、実際に実機の `nvim-config-blink-skkeleton` 側の設定を書き換えて skk.nvim を差し込む配線・動作確認はまだ行っていない（下記「既知の制限」も参照）。
@@ -318,7 +320,11 @@ require("blink-cmp").setup({
         name = "skk",
         module = "skk.blink_source",
         enabled = function()
-          return require("skk.henkan.state").get_phase() == "midashi"
+          -- "midashi"（▽、通常のかな漢字変換）だけでなく "abbrev"
+          -- （▽、"/" で始める英字そのままの見出し）でも有効にする。
+          -- 詳細は下記「さらに注意4」参照。
+          local phase = require("skk.henkan.state").get_phase()
+          return phase == "midashi" or phase == "abbrev"
         end,
       },
     },
@@ -341,7 +347,7 @@ vim.api.nvim_create_autocmd("User", {
   pattern = "SkkHenkanChanged",
   callback = function(ev)
     local phase = ev.data and ev.data.phase
-    if phase == "midashi" then
+    if phase == "midashi" or phase == "abbrev" then
       vim.schedule(function()
         require("blink.cmp").show({ providers = { "skk" } })
       end)
