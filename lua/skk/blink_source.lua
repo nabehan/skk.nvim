@@ -159,6 +159,48 @@ function source:get_completions(_, callback)
   local items = {}
   local rank = 0
 
+  -- 【重要・実機で発見】blink.cmp 本体は、どのソースの候補であっても
+  -- 一律に「実バッファのカーソル位置から独自に抽出した『キーワード』」を
+  -- 問い合わせ文字列として、各候補の filterText（無ければ label）に対して
+  -- ファジーマッチをかける（completion/list.lua の list.fuzzy() 参照）。
+  -- これは is_incomplete_forward/backward の指定に関わらず必ず行われ、
+  -- ソース側でバイパスする公式な手段は今のところ無い。
+  --
+  -- このキーワード抽出（fuzzy/rust/keyword.rs の BACKWARD_REGEX =
+  -- `[\p{L}0-9_][\p{L}0-9_-]*$`）は Unicode の「文字」カテゴリを対象に
+  -- しており、漢字も対象に含まれる。skk.nvim の ▽/▼ は extmark（仮想
+  -- テキスト）表示で実バッファは変化しないため、カーソル直前に実テキスト
+  -- として漢字や英数字が続いていると、それが丸ごと「キーワード」として
+  -- 抽出されてしまう。抽出された「漢字」等の文字列と、こちらが返す
+  -- かな漢字変換候補（reading="かん" 等）はほぼ一致しないため、
+  -- フィルタで全滅し、候補ウィンドウ自体が開かなくなる（間に半角スペース
+  -- を挟むと、そこでキーワードが空文字列になり単に全件通過するだけなので
+  -- 症状が出ない）。
+  --
+  -- 対策として、blink.cmp が実際に抽出するのと同じ関数
+  -- （blink.cmp.fuzzy.get_keyword_range()、blink.cmp.config の
+  -- completion.keyword.range 設定を使用）をこちらからも呼んで、
+  -- blink.cmp が抽出するはずの文字列を先読みし、filterText の先頭に
+  -- そのまま前置する。こうすれば、blink.cmp が何を抽出しようと、それは
+  -- 常に filterText の先頭一致になるためフィルタで弾かれない。
+  -- 【注意】blink.cmp の非公開に近い内部実装（fuzzy.get_keyword_range）に
+  -- 依存しているため、blink.cmp のアップデートで壊れる可能性がある。
+  -- 呼び出しは pcall で保護し、失敗時は空文字列にフォールバックする
+  -- （その場合はこの不具合が再発するだけで、他の動作には影響しない）。
+  local real_keyword = ""
+  do
+    local ok_kw, kw = pcall(function()
+      local fuzzy_mod = require("blink.cmp.fuzzy")
+      local blink_config = require("blink.cmp.config")
+      local line = is_cmdline and vim.fn.getcmdline() or vim.api.nvim_get_current_line()
+      local kw_start, kw_end = fuzzy_mod.get_keyword_range(line, col, blink_config.completion.keyword.range)
+      return line:sub(kw_start + 1, kw_end)
+    end)
+    if ok_kw and type(kw) == "string" then
+      real_keyword = kw
+    end
+  end
+
   for _, full_reading in ipairs(readings) do
     local candidates = dict.lookup(full_reading, false, true) -- skip_skkserv=true。上のコメント参照。
     for _, cand in ipairs(candidates) do
@@ -166,7 +208,7 @@ function source:get_completions(_, callback)
       table.insert(items, {
         label = cand.word,
         labelDetails = { description = full_reading },
-        filterText = reading,
+        filterText = real_keyword .. reading,
         -- dict.lookup() は既に優先順位（個人辞書の学習順）でソート済みな
         -- ので、その並び順をそのまま sortText に反映する
         -- （数値を10桁ゼロ埋めして文字列比較でも数値順になるようにする）。
