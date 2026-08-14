@@ -350,14 +350,28 @@ local function current_fallback_text()
 end
 
 --- 単語登録UIを開いても安全に使えるよう、Esc/C-g を「本当にキャンセル
---- されたか」判定できるセンチネル文字列に一時的に再マップする際に使う
---- （Neovim組み込みの vim.fn.input() は <C-g> を特別扱いしない＝ただの
---- 制御文字として無視されてしまい、<Esc> と挙動を統一できないため）。
---- 実際に人間が入力する見出し語に紛れ込む可能性が無いよう、制御文字で
---- 構成してある。skkeleton（denops/skkeleton/function/dictionary.ts の
---- registerWord()）が "__skkeleton_return__" という文字列で行っているのと
---- 同じ発想。
-local REGISTRATION_CANCEL_SENTINEL = "\1skk_nvim_registration_cancel\1"
+--- されたか」判定する際に使う（Neovim組み込みの vim.fn.input() は
+--- <C-g> を特別扱いしない＝ただの制御文字として無視されてしまい、
+--- <Esc> と挙動を統一できないため）。
+---
+--- 【この登録UIはひらがなモードから始まる】ため（M._trigger_registration()
+--- 内の capture.reserve_next_cmdline_mode("hira") 参照）、この input()
+--- の中で打鍵される文字は capture.lua の vim.on_key() リスナーによって
+--- 常にローマ字→かな変換の対象になる。そのため、以前はキャンセル判定に
+--- 「センチネル文字列を実際にタイプさせて、input() の戻り値にその文字列が
+--- 含まれるか調べる」方式（skkeleton の "__skkeleton_return__" と同じ発想）
+--- を使っていたが、そのセンチネル文字列自身の英字部分までローマ字かな
+--- 変換されてしまい、(1) コマンドラインが文字化けし、(2) 変換後の文字列は
+--- 元のセンチネルと一致しなくなるため「キャンセルではなく確定された」と
+--- 誤判定し、化けた文字列がそのまま個人辞書に書き込まれる、という不具合が
+--- あった（実機で発見）。
+---
+--- そのため今は、<Esc>/<C-g> を `<expr>` マッピングにして、実際に
+--- 打鍵させるキーは `<CR>`（input() を閉じるだけ）に限定し、
+--- 「キャンセルされたか」はコマンドラインのテキストではなく
+--- Lua のクロージャ変数（M._trigger_registration() 内の local
+--- cancelled）で直接管理する。これなら英字が一切タイプされないので、
+--- ローマ字かな変換エンジンを通ることがない。
 
 --- 候補が見つからない、または候補送りで末尾から次へ進もうとしたときに
 --- 呼ぶ。単語登録UIを開き、確定すれば個人辞書に書き込んでその単語を、
@@ -447,8 +461,15 @@ function M._trigger_registration()
     capture.reserve_next_cmdline_mode("hira")
   end
 
-  vim.keymap.set("c", "<Esc>", REGISTRATION_CANCEL_SENTINEL .. "<CR>", { noremap = true })
-  vim.keymap.set("c", "<C-g>", REGISTRATION_CANCEL_SENTINEL .. "<CR>", { noremap = true })
+  local cancelled = false
+  vim.keymap.set("c", "<Esc>", function()
+    cancelled = true
+    return "<CR>"
+  end, { noremap = true, expr = true })
+  vim.keymap.set("c", "<C-g>", function()
+    cancelled = true
+    return "<CR>"
+  end, { noremap = true, expr = true })
 
   vim.schedule(function()
     local ok, result = pcall(vim.fn.input, prompt)
@@ -456,7 +477,7 @@ function M._trigger_registration()
     pcall(vim.keymap.del, "c", "<C-g>")
 
     local final_text
-    if not ok or result == "" or result:find(REGISTRATION_CANCEL_SENTINEL, 1, true) then
+    if not ok or cancelled or result == "" then
       final_text = fallback_text
     else
       if search_key then
