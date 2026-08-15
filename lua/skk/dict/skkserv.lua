@@ -48,6 +48,22 @@ local config = nil
 ---@type uv_tcp_t|nil
 local client = nil
 local connecting = false
+--- 【重要・実機で発見】このクライアントは接続を1本だけ使い回す設計で、
+--- かつ send_request_and_wait() は「次に届いた1行 = 今送ったリクエストへの
+--- 応答」という前提でレスポンスを待つ。send_request_and_wait() は内部で
+--- vim.wait() を使うが、vim.wait() は待っている間もイベントループを回す
+--- （タイマー・autocmd・キー入力処理が普通に進む）。そのため、応答待ち中に
+--- ユーザーが次のキーを叩くと、そのキー入力が SkkHenkanChanged を発火させ、
+--- blink.cmp 側が新たな get_completions() を呼び、そこから再び
+--- send_request_and_wait() が「再入」して同じ client ソケットに
+--- read_start()/write() をかけてしまうことがある。すると応答の行が
+--- どちらのリクエストに対応するのか分からなくなり、片方（あるいは両方）が
+--- タイムアウトするまで固まる。実機で観測された「同じ読みなのに数ms〜
+--- 数千msまで大きくばらつく」「連続する呼び出しの一部だけ極端に遅い」と
+--- いう挙動は、この再入による衝突と整合する。
+--- そのため in_flight で多重実行を検出し、既に別のリクエストが
+--- 進行中なら新しいリクエストは即座に諦める（ソケットには一切触れない）。
+local in_flight = false
 --- 直近の接続失敗時刻（uv.now() のミリ秒）。しばらく再試行しない
 --- （サーバーが落ちているたびに毎回タイムアウトを待つと henkan の
 --- 反応が悪くなるため）。
@@ -262,6 +278,16 @@ end
 ---@param command_body string
 ---@return string|nil response
 local function send_request_and_wait(command_body)
+  if in_flight then
+    -- 既に別のリクエストが進行中。ソケットには一切触れず即座に諦める
+    -- （上の in_flight のコメント参照。ここで手を出すと応答の行が
+    -- どちらのリクエストのものか分からなくなり、両方が壊れる）。
+    last_status = "timeout"
+    debug_notify("skipped: another request already in flight")
+    return nil
+  end
+  in_flight = true
+
   local response = nil
   local connect_ok = nil
   local done = false
@@ -319,6 +345,8 @@ local function send_request_and_wait(command_body)
   vim.wait(config.timeout_ms, function()
     return done
   end, 5)
+
+  in_flight = false
 
   if connect_ok == false then
     last_status = "connect_failed"
