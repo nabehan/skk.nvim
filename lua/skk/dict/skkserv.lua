@@ -281,8 +281,12 @@ end
 --- 戻り値: "\n" 終端まで受信できた生の応答文字列。config 未設定・
 --- 接続失敗・タイムアウトのいずれかなら nil（last_status に理由を残す）。
 ---@param command_body string
+---@param is_terminated fun(full: string): boolean  終端条件（既定は "\n" 終端）
 ---@return string|nil response
-local function send_request_and_wait(command_body)
+local function send_request_and_wait(command_body, is_terminated)
+  is_terminated = is_terminated or function(full)
+    return full:find("\n", 1, true) ~= nil
+  end
   if in_flight then
     -- 既に別のリクエストが進行中。ソケットには一切触れず即座に諦める
     -- （上の in_flight のコメント参照。ここで手を出すと応答の行が
@@ -323,7 +327,7 @@ local function send_request_and_wait(command_body)
         end
         table.insert(chunks, chunk)
         local full = table.concat(chunks)
-        if full:find("\n", 1, true) then
+        if is_terminated(full) then
           pcall(function()
             client:read_stop()
           end)
@@ -495,59 +499,19 @@ function M.get_version()
     return nil
   end
 
-  local response = nil
-  local connect_ok = nil
-  local done = false
-
-  ensure_connected(function(ok)
-    connect_ok = ok
-    if not ok then
-      done = true
-      return
-    end
-    local chunks = {}
-    debug_notify("send:", "2 (no terminator)")
-    pcall(function()
-      client:read_start(function(err, chunk)
-        if err or not chunk then
-          done = true
-          return
-        end
-        table.insert(chunks, chunk)
-        local full = table.concat(chunks)
-        -- 【重要】"2" コマンドのレスポンスはスペース終端（改行ではない）。
-        -- yaskkserv2 の README「SKK protocol memo」参照。
-        if full:find(" ", 1, true) then
-          pcall(function()
-            client:read_stop()
-          end)
-          response = full
-          done = true
-        end
-      end)
-    end)
-    pcall(function()
-      -- 【重要】"2" コマンドのリクエストは終端記号なし（改行すら不要）。
-      client:write("2")
-    end)
+  -- 【重要】"2" コマンドは in_flight による排他制御を経由しない独自実装
+  -- だったため、check_skkserv() 由来の "2" と、ライブ補完由来の "1"/"4" が
+  -- 同じソケット上でタイミング的に重なると、応答が混線する不具合があった
+  -- （実機で確認：確定文字列の直後にバージョン応答由来と思われるゴミが
+  -- 混入した）。send_request_and_wait() を common 化して経由させることで
+  -- 同じ排他制御の下に置く。
+  -- 【重要】"2" コマンドのレスポンスはスペース終端（改行ではない）。
+  local response = send_request_and_wait("2", function(full)
+    return full:find(" ", 1, true) ~= nil
   end)
-
-  vim.wait(config.timeout_ms, function()
-    return done
-  end, 5)
-
-  if connect_ok == false then
-    last_status = "connect_failed"
-    return nil
-  end
   if not response then
-    last_status = "timeout"
-    debug_notify("timeout waiting for version response (timeout_ms=" .. config.timeout_ms .. ")")
     return nil
   end
-
-  debug_notify("recv:", response)
-  last_status = "ok"
   return (response:gsub("%s+$", ""))
 end
 
