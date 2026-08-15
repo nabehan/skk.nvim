@@ -132,6 +132,17 @@ end
 ---@param on_ready fun(ok: boolean)
 local function connect_to_ip(ip, on_ready)
   local sock = uv.new_tcp()
+  -- 【重要・実機で発見】TCP_NODELAY を有効にする。これが無いと、
+  -- Nagle のアルゴリズム（小さいパケットをまとめて送ろうと少し待つ）と
+  -- 受信側の遅延ACK（すぐACKを返さず、送るデータがあれば相乗りさせようと
+  -- 少し待つ）が組み合わさり、"1<reading> " のような小さいリクエストの
+  -- 往復のたびに ~40ms 前後の人為的な遅延が発生する（ローカルホストでも
+  -- 発生する、TCPの典型的な落とし穴）。1回の見出し語入力につき最大
+  -- max_items+1 回もこの往復が発生しうる設計（M.lookup_prefix() 参照）の
+  -- ため、これが積み重なって数秒単位の遅延として体感された。
+  pcall(function()
+    sock:nodelay(true)
+  end)
   local done = false
   local ok_connect_call, connect_err = pcall(function()
     sock:connect(ip, config.port, function(err)
