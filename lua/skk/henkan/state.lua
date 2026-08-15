@@ -120,6 +120,42 @@ local function midashi_display()
   return render_for_mode(session.reading, session.source_mode) .. session:reading_pending()
 end
 
+--- blink.cmp ネイティブソース（lua/skk/blink_source.lua）から、ライブ補完の
+--- 候補一覧（読み一覧）で選ばれた読みへ、現在の ▽/abbrev の読みを一気に
+--- 置き換える。ローマ字入力を経由せず、既に確定済みのかな/ASCII文字列を
+--- そのまま session.reading にセットする（辞書由来の読みなので変換不要）。
+--- 【設計】skkeleton の blink.cmp 連携と同じ考え方：ここでは読みを
+--- 補完するだけで、実際の変換候補（▼）へは進めない。ユーザーは従来通り
+--- <SPC> で ▼ に進む。extmark 表示・SkkHenkanChanged 通知は M.input()
+--- 等と同様に行う。
+--- phase が "midashi"/"abbrev" 以外、送り仮名入力中、セッションが無い
+--- 場合は何もせず false を返す。
+---@param new_reading string
+---@return boolean ok
+function M.set_reading(new_reading)
+  if not session then
+    return false
+  end
+  if phase ~= "midashi" and phase ~= "abbrev" then
+    return false
+  end
+  if phase == "midashi" and session:is_okuri_pending() then
+    -- 送り仮名入力中は対象外（読みの意味が異なるため）。
+    return false
+  end
+
+  session.reading = new_reading
+  session.reading_input.buffer = "" -- 未確定のローマ字断片も破棄する
+
+  if phase == "abbrev" then
+    preedit.show_abbrev(session.reading)
+  else
+    preedit.show_midashi(midashi_display(), session.okuri_consonant)
+  end
+  notify_changed()
+  return true
+end
+
 --- ▽ を開始する。capture.lua が大文字キー検知時に呼ぶ。
 ---@param mode "hira"|"kata" ▽を開始したモード（表示・送り仮名の変換先に使う）
 ---@param first_char string 大文字キーを小文字化した、最初のローマ字1文字

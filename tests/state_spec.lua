@@ -214,6 +214,69 @@ describe("state: ▽ 開始・ローマ字入力", function()
   )
 end)
 
+describe("state: set_reading()（blink.cmp ライブ補完で選ばれた読みへの置き換え）", function()
+  before_each(reset)
+
+  it("▽ 状態で読みを一気に置き換えられる（▼には進まない）", function()
+    state.start_midashi("hira", "k")
+    state.input("a")
+    state.input("n")
+    assert.are.equal("かん", state.current_reading())
+
+    local ok = state.set_reading("かんじ")
+    assert.is_true(ok)
+    assert.are.equal("midashi", state.get_phase())
+    assert.are.equal("かんじ", state.current_reading())
+  end)
+
+  it("未確定のローマ字断片も破棄される", function()
+    state.start_midashi("hira", "k")
+    state.input("a")
+    state.input("n")
+    state.input("s") -- "s" は未確定のまま（次に母音が来ないと確定しない）
+
+    state.set_reading("かんじ")
+    -- 未確定断片が残っていれば ▼ 遷移時の検索キーが濁るはずなので、
+    -- 素直に "かんじ" のみで検索される（＝残っていない）ことを確認する。
+    dict.set_dict(parser.parse("かんじ /漢字/"))
+    state.space()
+    assert.are.equal("select", state.get_phase())
+  end)
+
+  it("abbrev モードでも読みを置き換えられる", function()
+    state.start_abbrev("hira")
+    state.input_abbrev("t")
+    state.input_abbrev("i")
+    assert.are.equal("ti", state.current_reading())
+
+    local ok = state.set_reading("timing")
+    assert.is_true(ok)
+    assert.are.equal("abbrev", state.get_phase())
+    assert.are.equal("timing", state.current_reading())
+  end)
+
+  it("phase が idle のときは何もせず false を返す", function()
+    assert.are.equal("idle", state.get_phase())
+    local ok = state.set_reading("かんじ")
+    assert.is_false(ok)
+  end)
+
+  it("▼ 状態（select）のときは何もせず false を返す", function()
+    state.start_midashi("hira", "k")
+    state.input("a")
+    state.input("n")
+    state.input("j")
+    state.input("i")
+    dict.set_dict(parser.parse("かんじ /漢字/"))
+    state.space()
+    assert.are.equal("select", state.get_phase())
+
+    local ok = state.set_reading("かんこう")
+    assert.is_false(ok)
+    assert.are.equal("select", state.get_phase())
+  end)
+end)
+
 describe("state: 辞書検索と▼遷移", function()
   before_each(function()
     reset()

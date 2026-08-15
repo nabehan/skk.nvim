@@ -56,24 +56,27 @@ describe("blink_source", function()
     assert.are.same({}, response.items)
   end)
 
-  it("▽ 状態で前方一致する候補をすべて展開して返す", function()
-    state.start_midashi("hira", "k")
-    for ch in ("an"):gmatch(".") do
-      state.input(ch)
-    end
-    -- reading == "かん" のはず（かんじ/かんたん/かんこう が前方一致）
+  it(
+    "▽ 状態で前方一致する読み一覧をすべて返す（漢字候補ではなく読み自体）",
+    function()
+      state.start_midashi("hira", "k")
+      for ch in ("an"):gmatch(".") do
+        state.input(ch)
+      end
+      -- reading == "かん" のはず（かんじ/かんたん/かんこう が前方一致）
 
-    local src = source_module.new()
-    local response = get_completions_sync(src)
+      local src = source_module.new()
+      local response = get_completions_sync(src)
 
-    local labels = {}
-    for _, item in ipairs(response.items) do
-      labels[#labels + 1] = item.label
+      local labels = {}
+      for _, item in ipairs(response.items) do
+        labels[#labels + 1] = item.label
+      end
+      table.sort(labels)
+      -- 漢字候補（幹事/観光/漢字/簡単）ではなく、読みそのもの3件
+      assert.are.same({ "かんこう", "かんじ", "かんたん" }, labels)
     end
-    table.sort(labels)
-    -- かんじ(漢字,幹事) + かんたん(簡単) + かんこう(観光) = 4件
-    assert.are.same({ "幹事", "観光", "漢字", "簡単" }, labels)
-  end)
+  )
 
   it(
     "▼ 状態（select）では空を返す（候補選択中は既存の候補ウィンドウに任せる）",
@@ -91,36 +94,37 @@ describe("blink_source", function()
     end
   )
 
-  it("execute() は default_implementation を呼び、個人辞書に記録したうえで確定する", function()
-    state.start_midashi("hira", "k")
-    for ch in ("an"):gmatch(".") do
-      state.input(ch)
-    end
-
-    local src = source_module.new()
-    local response = get_completions_sync(src)
-    local item
-    for _, it in ipairs(response.items) do
-      if it.label == "漢字" then
-        item = it
+  it(
+    "execute() は default_implementation を呼び、読みをその読みに置き換える（変換候補には進まない）",
+    function()
+      state.start_midashi("hira", "k")
+      for ch in ("an"):gmatch(".") do
+        state.input(ch)
       end
+
+      local src = source_module.new()
+      local response = get_completions_sync(src)
+      local item
+      for _, it in ipairs(response.items) do
+        if it.label == "かんじ" then
+          item = it
+        end
+      end
+      assert.is_not_nil(item)
+
+      local default_impl_called = false
+      local callback_called = false
+      src:execute({}, item, function()
+        callback_called = true
+      end, function()
+        default_impl_called = true
+      end)
+
+      assert.is_true(default_impl_called)
+      assert.is_true(callback_called)
+      -- 読みが置き換わっただけで、▽のまま（▼の変換候補には進んでいない）
+      assert.are.equal("midashi", state.get_phase())
+      assert.are.equal("かんじ", state.current_reading())
     end
-    assert.is_not_nil(item)
-
-    local default_impl_called = false
-    local callback_called = false
-    src:execute({}, item, function()
-      callback_called = true
-    end, function()
-      default_impl_called = true
-    end)
-
-    assert.is_true(default_impl_called)
-    assert.is_true(callback_called)
-    assert.are.equal("idle", state.get_phase()) -- 確定してセッションが終わっている
-
-    -- 個人辞書に記録され、次回「かんじ」検索で先頭候補になっているはず
-    local candidates = dict.lookup("かんじ", false)
-    assert.are.equal("漢字", candidates[1].word)
-  end)
+  )
 end)

@@ -1,11 +1,37 @@
 -- lua/skk/blink_source.lua
 --
--- blink.cmp 用のネイティブソース。`▽`（見出し語入力中）状態のときだけ、
--- dict.lookup_prefix() による前方一致検索の結果をライブ補完として出す
--- （denops版 skkeleton の getCompletionResult() 相当。実装前に
--- vim-skk/skkeleton の denops/skkeleton/function/dictionary.ts、および
--- 実際に blink.cmp と組み合わせて運用されている
--- nvim-config-blink-skkeleton の skkeleton_source.lua を読んで参考にした）。
+-- blink.cmp 用のネイティブソース。`▽`/abbrev（見出し語入力中）状態の
+-- ときだけ、dict.lookup_prefix() による前方一致検索の「読み一覧」を
+-- ライブ補完として出す。
+--
+-- 【設計方針・v2（skkeleton 方式に合わせた）】
+-- 実機での性能検証の結果、以前の実装（前方一致で見つかった読みごとに
+-- 実際の変換候補まで dict.lookup()（"1" コマンド）で取得し、漢字候補
+-- そのものを補完メニューに出す設計）には、次の構造的な問題があった:
+--
+--   - 1回のキー入力につき最大 max_items+1 回もの dict.lookup() 呼び出しが
+--     発生する（前方一致で最大 max_items 件の読みが見つかった場合）。
+--   - SKKサーバーを有効にすると、"1" コマンドのハンドラ側で
+--     google-japanese-input（既定値 "notfound"）が有効な限り、
+--     ローカル辞書で見つからなかった読みのたびに SKKサーバーが
+--     Google 日本語入力へのオンラインHTTPS問い合わせにフォールバックし、
+--     1回で数秒単位の遅延になることがある（実機で発見。yaskkserv2 の
+--     src/skk/yaskkserv2/dictionary_reader.rs の read_candidates() 参照。
+--     google-suggest とは別の、独立した設定であることに注意）。
+--   - 1回のキー入力で最大 max_items+1 回も踏むため、この「たまに重い」
+--     経路に当たる確率が跳ね上がる。
+--
+-- skkeleton（denops/skkeleton/sources/skk_server.ts の
+-- getCompletionResult()）は、ライブ補完では "4"（前方一致）だけを呼び、
+-- 実際の変換候補（"1"）は選択・確定の段階まで一切取得しない設計だった。
+-- これにより「1回のキー入力で最大1回の "4" のみ」に抑えられており、
+-- "1" 由来の遅延（Googleフォールバック含む）をライブ補完中に踏むことが
+-- そもそも無い。
+--
+-- 本ソースもこれに合わせ、v2 では **ライブ補完に出すのは読み一覧のみ**
+-- とし、blink.cmp のメニューで読みを選ぶと `▽`/abbrev の読みがその読みに
+-- 置き換わるだけ（henkan/state.lua の M.set_reading()）で、実際の変換候補
+-- （▼）には進まない。従来通り <SPC> で ▼ に進む。
 --
 -- 【使い方】blink.cmp の設定（sources.providers）に以下のように登録する:
 --
@@ -31,17 +57,12 @@
 -- 【設計上の重要な注意（skkeleton 用ソースとの決定的な違い）】
 -- skkeleton は `▽`/`▼` を実バッファへの直接書き込みで表示するため、
 -- skkeleton_source.lua は「実テキストの範囲を textEdit で置換する」方式
--- （getPreEdit() で得た文字列の分だけ削って新しい単語を挿入する）が
--- 使えた。一方 skk.nvim の `▽`/`▼` は extmark（仮想テキスト）表示で、
--- 実バッファには何も書き込まれていない。そのため同じ方式は使えない
--- （削除すべき実テキストがそこに存在しない）。
+-- が使えた。一方 skk.nvim の `▽`/`▼` は extmark（仮想テキスト）表示で、
+-- 実バッファには何も書き込まれていない。そのため同じ方式は使えない。
 --
 -- このソースでは textEdit を「今のカーソル位置への空挿入」（no-op）に
--- とどめ、実際の確定処理（extmarkのクリア・個人辞書への記録・実テキスト
--- の挿入）は execute() の中で henkan/state.lua の確定経路
--- （M.confirm_external()）に委譲する。この設計により、候補を選ぶ前の
--- ライブなゴーストテキストプレビューは出せない（メニュー上のラベル表示・
--- 選択・確定そのものは問題なく機能する）というトレードオフがある。
+-- とどめ、実際の状態変更（読みの置き換え）は execute() の中で
+-- henkan/state.lua の M.set_reading() に委譲する。
 
 ---@module 'blink.cmp'
 ---@class blink.cmp.Source
@@ -51,7 +72,7 @@ source.__index = source
 --- require("skk").setup({ blink = { ... } }) から lua/skk/init.lua 経由で
 --- 差し込まれる設定。
 ---@type { max_items: integer, debug_timing: boolean, skip_skkserv: boolean }
-local config = { max_items = 50, debug_timing = false, skip_skkserv = true }
+local config = { max_items = 50, debug_timing = false, skip_skkserv = false }
 
 ---@param opts { max_items: integer?, debug_timing: boolean?, skip_skkserv: boolean? }|nil
 function source.setup(opts)
@@ -81,12 +102,9 @@ function source:get_completions(_, callback)
   local henkan_state = require("skk.henkan.state")
   local dict = require("skk.dict")
 
-  -- 【重要・実機で発見】abbrev モード（"/" 開始、見出しがASCII文字列その
-  -- ものになる）も対象にする。henkan/state.lua の実際の変換候補検索
-  -- （M.space()/M.search()）は "midashi" と "abbrev" を対称に扱っており
-  -- （abbrev では session.reading が ASCII 文字列になるだけで、検索キー
-  -- として扱う点は同じ）、blink.cmp 側のライブ補完だけ "midashi" 限定に
-  -- していたため、abbrev モードで候補ウィンドウが一切出ない不具合があった。
+  -- abbrev モード（"/" 開始、見出しがASCII文字列そのものになる）も
+  -- 対象にする（実機で発見：以前は "midashi" 限定にしていたため、
+  -- abbrev モードで候補ウィンドウが一切出ない不具合があった）。
   local phase = henkan_state.get_phase()
   if phase ~= "midashi" and phase ~= "abbrev" then
     callback({ items = {}, is_incomplete_forward = false, is_incomplete_backward = false })
@@ -100,47 +118,46 @@ function source:get_completions(_, callback)
   end
 
   -- 【暫定の計測ログ】require("skk").setup({ blink = { debug_timing = true } })
-  -- で有効化すると、この get_completions() 1回あたりの所要時間（全体・
-  -- lookup_prefix・lookup ループの内訳）を vim.notify() に出す。原因調査用
-  -- の一時的なコードなので、原因が特定でき次第削除する。
+  -- で有効化すると、この get_completions() 1回あたりの所要時間を
+  -- vim.notify() に出す。
   local t_start = config.debug_timing and vim.loop.hrtime() or nil
-  local t_after_prefix
 
   -- 送りありの前方一致補完は現時点で提供していない（dict.lookup_prefix()
   -- の設計を参照。プロトコル・実用上の理由で okuri-nasi のみに絞っている）。
   --
-  -- 【重要】既定では skip_skkserv=true（config.skip_skkserv）を指定する。
-  -- SKKサーバーを含めてしまうと、この関数自体が "4" コマンドで1回、
-  -- さらに下のループで見つかった読みの件数（最大 max_items 件）だけ
-  -- "1" コマンドが飛ぶため、キー入力のたびに最大 max_items+1 回もの
-  -- 同期TCPラウンドトリップが発生しうる（詳細は lua/skk/dict/init.lua の
-  -- M.lookup_prefix() のコメント参照）。実際どの程度の体感になるかは
-  -- 辞書構成やSKKサーバーの実装・応答速度に依存するため、
-  -- require("skk").setup({ blink = { skip_skkserv = false } }) で
-  -- 無効化し、ライブ補完にもSKKサーバーの候補を含めることができる。
+  -- 【設計 v2】ここで取得するのは「読み一覧」のみ（"4" コマンド相当）。
+  -- 各読みの実際の変換候補（"1" コマンド）は取得しない
+  -- （ファイル冒頭の設計方針コメント参照）。skip_skkserv の既定値は
+  -- false（skkeleton と同じくSKKサーバーの前方一致結果も含める）。
+  -- "4" コマンドのハンドラには google-japanese-input のフォールバックが
+  -- 無いことを確認済み（yaskkserv2 の dictionary_reader.rs 参照）ので、
+  -- "1" 系のような遅延リスクは無い想定。気になる場合は
+  -- require("skk").setup({ blink = { skip_skkserv = true } }) で
+  -- 個人辞書・ローカル辞書のみに絞れる。
   local ok, readings = pcall(dict.lookup_prefix, reading, false, config.max_items, config.skip_skkserv)
+
   if t_start then
-    t_after_prefix = vim.loop.hrtime()
-  end
-  if not ok or not readings or #readings == 0 then
-    if t_start then
-      vim.schedule(function()
-        vim.notify(
-          string.format(
-            "[skk.nvim timing] reading=%s lookup_prefix=%.1fms (0 readings)",
-            reading,
-            (t_after_prefix - t_start) / 1e6
-          )
+    local elapsed_ms = (vim.loop.hrtime() - t_start) / 1e6
+    vim.schedule(function()
+      vim.notify(
+        string.format(
+          "[skk.nvim timing] reading=%s readings=%d lookup_prefix=%.1fms",
+          reading,
+          (ok and readings) and #readings or 0,
+          elapsed_ms
         )
-      end)
-    end
+      )
+    end)
+  end
+
+  if not ok or not readings or #readings == 0 then
     callback({ items = {}, is_incomplete_forward = true, is_incomplete_backward = true })
     return function() end
   end
 
   -- 【textEdit について】上部のコメント参照。実際には何も編集しない
   -- （newText=""、range は今のカーソル位置ぴったりのゼロ幅）no-op にし、
-  -- 実際の確定処理は execute() に委譲する。
+  -- 実際の状態変更（読みの置き換え）は execute() に委譲する。
   --
   -- 【重要・実機で発見】range の計算はコマンドラインモードかどうかで
   -- 分岐させる必要がある。skk.nvim の enter_key は挿入モードだけでなく
@@ -168,8 +185,6 @@ function source:get_completions(_, callback)
   }
 
   local kind = require("blink.cmp.types").CompletionItemKind.Text
-  local items = {}
-  local rank = 0
 
   -- 【重要・実機で発見】blink.cmp 本体は、どのソースの候補であっても
   -- 一律に「実バッファのカーソル位置から独自に抽出した『キーワード』」を
@@ -184,10 +199,9 @@ function source:get_completions(_, callback)
   -- テキスト）表示で実バッファは変化しないため、カーソル直前に実テキスト
   -- として漢字や英数字が続いていると、それが丸ごと「キーワード」として
   -- 抽出されてしまう。抽出された「漢字」等の文字列と、こちらが返す
-  -- かな漢字変換候補（reading="かん" 等）はほぼ一致しないため、
-  -- フィルタで全滅し、候補ウィンドウ自体が開かなくなる（間に半角スペース
-  -- を挟むと、そこでキーワードが空文字列になり単に全件通過するだけなので
-  -- 症状が出ない）。
+  -- 読み（例: "かん"）はほぼ一致しないため、フィルタで全滅し、候補
+  -- ウィンドウ自体が開かなくなる（間に半角スペースを挟むと、そこで
+  -- キーワードが空文字列になり単に全件通過するだけなので症状が出ない）。
   --
   -- 対策として、blink.cmp が実際に抽出するのと同じ関数
   -- （blink.cmp.fuzzy.get_keyword_range()、blink.cmp.config の
@@ -213,66 +227,25 @@ function source:get_completions(_, callback)
     end
   end
 
-  local per_reading_timing = t_start and {} or nil
-  for _, full_reading in ipairs(readings) do
-    local t_r0 = per_reading_timing and vim.loop.hrtime() or nil
-    local candidates = dict.lookup(full_reading, false, config.skip_skkserv) -- 上のコメント参照。
-    if per_reading_timing then
-      table.insert(
-        per_reading_timing,
-        string.format("%s(%d件)=%.1fms", full_reading, #candidates, (vim.loop.hrtime() - t_r0) / 1e6)
-      )
-    end
-    for _, cand in ipairs(candidates) do
-      rank = rank + 1
-      table.insert(items, {
-        label = cand.word,
-        labelDetails = { description = full_reading },
-        filterText = real_keyword .. reading,
-        -- dict.lookup() は既に優先順位（個人辞書の学習順）でソート済みな
-        -- ので、その並び順をそのまま sortText に反映する
-        -- （数値を10桁ゼロ埋めして文字列比較でも数値順になるようにする）。
-        sortText = string.format("%010d", rank),
-        kind = kind,
-        textEdit = { range = range, newText = "" },
-        data = { reading = full_reading, word = cand.word, annotation = cand.annotation },
-      })
-    end
-  end
-
-  if per_reading_timing and #per_reading_timing > 0 then
-    vim.schedule(function()
-      vim.notify("[skk.nvim timing] per-reading: " .. table.concat(per_reading_timing, " / "))
-    end)
-  end
-
-  if t_start then
-    local t_end = vim.loop.hrtime()
-    vim.schedule(function()
-      vim.notify(
-        string.format(
-          "[skk.nvim timing] reading=%s readings=%d items=%d lookup_prefix=%.1fms lookup_loop=%.1fms total=%.1fms",
-          reading,
-          #readings,
-          #items,
-          (t_after_prefix - t_start) / 1e6,
-          (t_end - t_after_prefix) / 1e6,
-          (t_end - t_start) / 1e6
-        )
-      )
-    end)
+  local items = {}
+  for rank, full_reading in ipairs(readings) do
+    table.insert(items, {
+      -- 表示するのは読みそのもの（漢字変換候補ではない。上部の設計方針
+      -- コメント参照）。
+      label = full_reading,
+      filterText = real_keyword .. reading,
+      -- dict.lookup_prefix() は既に優先順位でソート済みなので、その
+      -- 並び順をそのまま sortText に反映する（数値を10桁ゼロ埋めして
+      -- 文字列比較でも数値順になるようにする）。
+      sortText = string.format("%010d", rank),
+      kind = kind,
+      textEdit = { range = range, newText = "" },
+      data = { reading = full_reading },
+    })
   end
 
   callback({ items = items, is_incomplete_forward = true, is_incomplete_backward = true })
   return function() end
-end
-
-function source:resolve(item, callback)
-  local annotation = item.data and item.data.annotation
-  if annotation then
-    item.documentation = { kind = "plaintext", value = annotation }
-  end
-  callback(item)
 end
 
 --- 【重要】blink.cmp の accept パイプラインでは、textEdit の適用は
@@ -281,15 +254,17 @@ end
 --- 反映されない」不具合になる。nvim-config-blink-skkeleton での実例で
 --- 確認済み）。このソースの textEdit は no-op（上部コメント参照）なので
 --- 実質的には何もしないが、契約上必ず呼ぶ。
---- 実際の確定処理は henkan/state.lua の M.confirm_external() に委譲する
---- （個人辞書への記録・extmarkのクリア・実テキストの挿入を一括で行う）。
+--- 実際の状態変更（読みの置き換え）は henkan/state.lua の
+--- M.set_reading() に委譲する。skkeleton と同様、これは変換候補の確定
+--- ではなく、あくまで読みの補完に留まる。ユーザーは従来通り <SPC> で
+--- ▼（実際の変換候補選択）に進む。
 function source:execute(_, item, callback, default_implementation)
   default_implementation()
 
   local data = item.data or {}
-  if data.reading and data.word then
+  if data.reading then
     local henkan_state = require("skk.henkan.state")
-    henkan_state.confirm_external(data.reading, false, data.word, data.annotation)
+    henkan_state.set_reading(data.reading)
   end
 
   callback()
