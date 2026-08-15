@@ -362,6 +362,26 @@ local function send_request_and_wait(command_body)
   if not response then
     last_status = "timeout"
     debug_notify("timeout waiting for response (timeout_ms=" .. config.timeout_ms .. ")")
+    -- 【重要・実機で発見】タイムアウトしても、それだけでは終わらせない。
+    -- client:read_stop() だけでは不十分（libuv/Lua側のコールバック配送を
+    -- 止めるだけで、OS のソケット受信バッファに溜まった「遅れて届いた
+    -- 応答」のバイト列そのものは消えない）。そのまま次のリクエストが
+    -- 同じ接続で read_start() すると、その残っていたバイト列を「次の
+    -- リクエストへの応答」として誤って受け取ってしまう（実機で発見・
+    -- 確認：1つ前のリクエストへの "4...\n"（該当なし応答）が、数リクエスト
+    -- 後の応答として誤配送され、そこから連鎖的にズレていった）。
+    -- 確実に切り分けるには接続そのものを閉じて capture し直すしかないため、
+    -- ここで client を閉じて nil にし、次回の ensure_connected() で
+    -- 新しい接続を張らせる（ローカルホストなら再接続のコストは軽微）。
+    if client then
+      pcall(function()
+        client:read_stop()
+      end)
+      pcall(function()
+        client:close()
+      end)
+      client = nil
+    end
     return nil
   end
 
@@ -431,6 +451,16 @@ end
 --- 読みの配列にパースする（"1" で始まらなければ空配列）。
 --- （_parse_response() 同様、候補ごとではなく応答全体を1回だけ変換する。
 --- 理由は _parse_response() のコメント参照。）
+---
+--- 【重要・実機で発見】区切りは "/" のみとする（空白では区切らない）。
+--- プロトコル上、応答は "/" 区切りの読み一覧のはずだが、辞書によっては
+--- （実機では jawiki 由来の "t(concat "\057")c" のような、SKKの
+--- プログラム候補構文がそのまま読みとして紛れ込んでいるエントリで発見）
+--- 読みの中に空白を含むものが存在する。以前は "[^/%s]+" で空白でも
+--- 区切っていたため、こうしたエントリが誤って複数の読みに分割され、
+--- 分割された断片（例 "\"\057\")c"）をサーバーに問い合わせて見つからず、
+--- それがきっかけでタイムアウト・応答の取り違えの連鎖を引き起こした
+--- （詳細は send_request_and_wait() のタイムアウト処理のコメント参照）。
 ---@param response string
 ---@return string[]
 function M._parse_prefix_response(response)
@@ -440,7 +470,7 @@ function M._parse_prefix_response(response)
   local body = response:sub(2):gsub("\n$", "")
   local utf8_body = encoding.convert(body, config.encoding, "utf-8") or body
   local readings = {}
-  for part in utf8_body:gmatch("[^/%s]+") do
+  for part in utf8_body:gmatch("[^/]+") do
     readings[#readings + 1] = part
   end
   return readings
