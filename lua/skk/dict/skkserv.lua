@@ -254,17 +254,22 @@ function M._parse_response(response)
   end
 
   local body = response:sub(2):gsub("\n$", "")
-  -- "/" は EUC-JP の多バイト文字の続きバイトにはならない
-  -- （EUC-JPの2バイト目以降は 0xA1-0xFE の範囲）ので、
-  -- エンコーディング変換前に候補部分文字列へ分割しても安全。
-  local candidates = jisyo_parser._parse_candidates_string(body)
 
-  for _, c in ipairs(candidates) do
-    c.word = encoding.convert(c.word, config.encoding, "utf-8") or c.word
-    if c.annotation then
-      c.annotation = encoding.convert(c.annotation, config.encoding, "utf-8") or c.annotation
-    end
-  end
+  -- 【重要・実機で発見】候補1件ごとに vim.fn.iconv() を呼ぶと
+  -- （以前の実装。単語＋注釈で最大候補数×2回）、候補数の多い読み
+  -- （「じ」のようなよくある1文字の読みだと数百件になることがある）で
+  -- vim.fn.iconv() の呼び出し自体のオーバーヘッド（VimLの関数ディス
+  -- パッチを経由するコスト）が積み重なり、体感できるレベルで重くなる。
+  -- 対策として、応答本体（body）をまず1回だけ丸ごと UTF-8 に変換して
+  -- から候補に分割する（候補1件ごとの変換は不要になる）。
+  --
+  -- 【分割前に変換して安全か】"/" は EUC-JP・UTF-8 いずれの多バイト文字の
+  -- 続きバイトにもならない（EUC-JPの2バイト目以降は 0xA1-0xFE、UTF-8の
+  -- 続きバイトは 0x80-0xBF の範囲で、"/" の 0x2F と重ならない）ので、
+  -- 変換してから "/" で分割しても、変換前に分割してから個別に変換しても
+  -- 結果は同じ。処理順序を入れ替えただけで、パース結果自体は変わらない。
+  local utf8_body = encoding.convert(body, config.encoding, "utf-8") or body
+  local candidates = jisyo_parser._parse_candidates_string(utf8_body)
 
   return candidates
 end
@@ -424,6 +429,8 @@ end
 
 --- "4" コマンドの応答文字列 "1/reading1/reading2/.../\n" を
 --- 読みの配列にパースする（"1" で始まらなければ空配列）。
+--- （_parse_response() 同様、候補ごとではなく応答全体を1回だけ変換する。
+--- 理由は _parse_response() のコメント参照。）
 ---@param response string
 ---@return string[]
 function M._parse_prefix_response(response)
@@ -431,9 +438,10 @@ function M._parse_prefix_response(response)
     return {}
   end
   local body = response:sub(2):gsub("\n$", "")
+  local utf8_body = encoding.convert(body, config.encoding, "utf-8") or body
   local readings = {}
-  for part in body:gmatch("[^/%s]+") do
-    readings[#readings + 1] = encoding.convert(part, config.encoding, "utf-8") or part
+  for part in utf8_body:gmatch("[^/%s]+") do
+    readings[#readings + 1] = part
   end
   return readings
 end
