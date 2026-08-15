@@ -413,11 +413,20 @@ function M.lookup(reading, has_okuri)
 
   -- 【重要】"1" コマンドのリクエストはスペース終端（改行ではない）。
   -- yaskkserv2 の README「SKK protocol memo」参照。
+  local t0 = config.debug and vim.loop.hrtime() or nil
   local response = send_request_and_wait("1" .. query .. " ")
+  local t1 = t0 and vim.loop.hrtime() or nil
   if not response then
     return {}
   end
-  return M._parse_response(response)
+  local result = M._parse_response(response)
+  if t0 then
+    debug_notify(
+      "lookup timing:",
+      string.format("send_and_wait=%.1fms parse=%.1fms", (t1 - t0) / 1e6, (vim.loop.hrtime() - t1) / 1e6)
+    )
+  end
+  return result
 end
 
 --- SKKサーバーへ前方一致検索する（"4" コマンド）。伝統的な SKK server

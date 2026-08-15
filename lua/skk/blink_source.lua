@@ -213,8 +213,16 @@ function source:get_completions(_, callback)
     end
   end
 
+  local per_reading_timing = t_start and {} or nil
   for _, full_reading in ipairs(readings) do
+    local t_r0 = per_reading_timing and vim.loop.hrtime() or nil
     local candidates = dict.lookup(full_reading, false, config.skip_skkserv) -- 上のコメント参照。
+    if per_reading_timing then
+      table.insert(
+        per_reading_timing,
+        string.format("%s(%d件)=%.1fms", full_reading, #candidates, (vim.loop.hrtime() - t_r0) / 1e6)
+      )
+    end
     for _, cand in ipairs(candidates) do
       rank = rank + 1
       table.insert(items, {
@@ -230,6 +238,12 @@ function source:get_completions(_, callback)
         data = { reading = full_reading, word = cand.word, annotation = cand.annotation },
       })
     end
+  end
+
+  if per_reading_timing and #per_reading_timing > 0 then
+    vim.schedule(function()
+      vim.notify("[skk.nvim timing] per-reading: " .. table.concat(per_reading_timing, " / "))
+    end)
   end
 
   if t_start then
