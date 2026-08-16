@@ -19,8 +19,13 @@ local mode_util = require("skk.mode")
 ---@param is_target_key fun(key: string): boolean
 ---@param key string
 ---@param sticky_shift { enabled: boolean, key: string }|nil 省略時は { enabled=true, key=";" }
+---@param passthrough_guard (fun(key: string): boolean)|nil lua/skk/capture.lua の
+---  M.set_passthrough_guard() で登録される、外部UI（blink.cmp等）への委譲判定。
+---  true を返す間、▽/abbrev の <CR>・catch-all による自動確定を行わない
+---  （現在フォーカス中の候補にすでに blink.cmp 側が反応しているケースで、
+---  skk.nvim 側が重複して確定してしまう不具合の対策）。
 ---@return boolean reprocess true なら、このキーは直接入力として再処理する
-local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
+local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift, passthrough_guard)
   sticky_shift = sticky_shift or { enabled = true, key = ";" }
   local BS = string.char(8)
   local BS_ALT = string.char(127)
@@ -34,7 +39,19 @@ local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
   local CTRL_N = string.char(14)
   local CTRL_P = string.char(16)
 
+  local phase = henkan_state.get_phase()
+
+  -- lua/skk/capture.lua の handle_henkan_key と同じ判定順序・条件。
+  -- ▽/abbrev フェーズで、かつ passthrough_guard(key) が true を返す間だけ
+  -- 適用する（select フェーズや、ローマ字入力そのものには影響しない）。
+  local defer_to_external_ui = (phase == "midashi" or phase == "abbrev")
+    and passthrough_guard ~= nil
+    and passthrough_guard(key)
+
   if key == CR then
+    if defer_to_external_ui then
+      return false
+    end
     henkan_state.confirm()
     return false
   end
@@ -50,8 +67,6 @@ local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
     henkan_state.space()
     return false
   end
-
-  local phase = henkan_state.get_phase()
 
   if phase == "select" then
     if key == "x" then
@@ -88,6 +103,9 @@ local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
       henkan_state.input_abbrev(key)
       return false
     end
+    if defer_to_external_ui then
+      return false
+    end
     henkan_state.confirm()
     return false
   end
@@ -112,6 +130,9 @@ local function handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
     henkan_state.input(key)
     return false
   end
+  if defer_to_external_ui then
+    return false
+  end
   henkan_state.confirm()
   return true
 end
@@ -125,11 +146,12 @@ end
 ---@param is_target_key fun(key: string): boolean
 ---@param key string
 ---@param sticky_shift { enabled: boolean, key: string }|nil 省略時は { enabled=true, key=";" }
-local function route(henkan_state, is_target_key, key, sticky_shift)
+---@param passthrough_guard (fun(key: string): boolean)|nil
+local function route(henkan_state, is_target_key, key, sticky_shift, passthrough_guard)
   sticky_shift = sticky_shift or { enabled = true, key = ";" }
 
   if henkan_state.is_active() then
-    local reprocess = handle_henkan_key(henkan_state, is_target_key, key, sticky_shift)
+    local reprocess = handle_henkan_key(henkan_state, is_target_key, key, sticky_shift, passthrough_guard)
     if not reprocess then
       return
     end
@@ -599,4 +621,120 @@ describe("capture henkan routing: ▼ (select) フェーズ", function()
       assert.are.equal("", calls[3][3])
     end
   )
+end)
+
+describe("capture henkan routing: 外部UI（blink.cmp等）への委譲（passthrough_guard）", function()
+  -- 実機で発見した不具合の回帰テスト。blink.cmp のライブ補完メニューが
+  -- 見えている間、そのキーが何にバインドされているか（実機は既定の
+  -- <C-y> ではなく <CR> を accept に使っていた）に関わらず、
+  -- skk.nvim 側は「未対応キー（<CR>含む）→ 確定して▽を抜ける」を
+  -- 行ってはならない（blink.cmp 側のキーマップと二重に反応し、確定
+  -- 済みの読みが実バッファへ本当に挿入されたうえで▽も終了してしまう）。
+  before_each(function()
+    calls = {}
+  end)
+
+  local function always_true(_key)
+    return true
+  end
+
+  local function always_false(_key)
+    return false
+  end
+
+  it("▽状態で外部UIが見えている間、未対応キーは confirm を呼ばない", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "midashi"
+    -- string.char(25) は <C-y>。実機で問題を起こしたキーだが、今回の
+    -- 判定はキーの種類を一切見ないので、どの値でも同じ結果になるはず。
+    route(fake, is_target_key, string.char(25), nil, always_true)
+    assert.are.equal(nil, calls[1])
+    -- ▽状態のままであること（confirm が呼ばれていれば idle に落ちる）
+    assert.are.equal("midashi", fake._phase)
+    assert.is_true(fake._active)
+  end)
+
+  it(
+    "▽状態で外部UIが見えている間、<CR> も confirm を呼ばない（実機は <CR> を accept に使っていた）",
+    function()
+      local fake = make_fake_state()
+      fake._active = true
+      fake._phase = "midashi"
+      route(fake, is_target_key, string.char(13), nil, always_true)
+      assert.are.equal(nil, calls[1])
+      assert.are.equal("midashi", fake._phase)
+    end
+  )
+
+  it("abbrev状態で外部UIが見えている間、未対応キーは confirm を呼ばない", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "abbrev"
+    route(fake, is_target_key, string.char(25), nil, always_true)
+    assert.are.equal(nil, calls[1])
+    assert.are.equal("abbrev", fake._phase)
+  end)
+
+  it("外部UIが見えていなければ（guard が false）、従来通り confirm する", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "midashi"
+    route(fake, is_target_key, string.char(25), nil, always_false)
+    assert.are.equal("confirm", calls[1][1])
+  end)
+
+  it("guard 自体が未登録（nil）でも、従来通り confirm する（後方互換）", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "midashi"
+    route(fake, is_target_key, string.char(25))
+    assert.are.equal("confirm", calls[1][1])
+  end)
+
+  it("▼(select)状態では guard の影響を受けない（従来通り確定＋再処理する）", function()
+    -- blink.cmp のライブ補完は▽/abbrevのみが対象で、▼（skk.nvim 自身の
+    -- 候補選択ウィンドウ）では常に非表示になる設計のため、select フェーズは
+    -- 対象外でよい。
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "select"
+    route(fake, is_target_key, "t", nil, always_true)
+    assert.are.equal("select_by_key", calls[1][1])
+    assert.are.equal("confirm", calls[2][1])
+    assert.are.equal("process_romaji", calls[3][1])
+  end)
+
+  it("外部UIが見えていても、ローマ字の読み入力そのものは通常通り継続できる", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "midashi"
+    route(fake, is_target_key, "a", nil, always_true)
+    assert.are.equal("input", calls[1][1])
+    assert.are.equal("a", calls[1][2])
+  end)
+
+  it("外部UIが見えていても、<C-g> によるキャンセルは通常通り機能する", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "midashi"
+    route(fake, is_target_key, string.char(7), nil, always_true)
+    assert.are.equal("cancel", calls[1][1])
+  end)
+
+  it("外部UIが見えていても、<BS> による読みの取り消しは通常通り機能する", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "midashi"
+    route(fake, is_target_key, string.char(8), nil, always_true)
+    assert.are.equal("backspace", calls[1][1])
+  end)
+
+  it("外部UIが見えていても、space（▼への遷移）は通常通り機能する", function()
+    local fake = make_fake_state()
+    fake._active = true
+    fake._phase = "midashi"
+    route(fake, is_target_key, " ", nil, always_true)
+    assert.are.equal("space", calls[1][1])
+  end)
 end)
