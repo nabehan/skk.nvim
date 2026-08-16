@@ -48,22 +48,65 @@ local config = nil
 ---@type uv_tcp_t|nil
 local client = nil
 local connecting = false
---- 【重要・実機で発見】このクライアントは接続を1本だけ使い回す設計で、
---- かつ send_request_and_wait() は「次に届いた1行 = 今送ったリクエストへの
---- 応答」という前提でレスポンスを待つ。send_request_and_wait() は内部で
---- vim.wait() を使うが、vim.wait() は待っている間もイベントループを回す
---- （タイマー・autocmd・キー入力処理が普通に進む）。そのため、応答待ち中に
---- ユーザーが次のキーを叩くと、そのキー入力が SkkHenkanChanged を発火させ、
---- blink.cmp 側が新たな get_completions() を呼び、そこから再び
---- send_request_and_wait() が「再入」して同じ client ソケットに
+
+--- 【重要・実機で発見、v3で直列キューに置き換え】このクライアントは
+--- 接続を1本だけ使い回す設計で、かつ send_request_and_wait() は
+--- 「次に届いた1行 = 今送ったリクエストへの応答」という前提で応答を
+--- 待つ。send_request_and_wait() は内部で vim.wait() を使うが、
+--- vim.wait() は待っている間もイベントループを回す（タイマー・
+--- autocmd・キー入力処理が普通に進む）。そのため、応答待ち中に
+--- ユーザーが次のキーを叩くと、そのキー入力が SkkHenkanChanged を
+--- 発火させ、blink.cmp 側が新たな get_completions() を呼び、そこから
+--- 再び send_request_and_wait() が「再入」して同じ client ソケットに
 --- read_start()/write() をかけてしまうことがある。すると応答の行が
---- どちらのリクエストに対応するのか分からなくなり、片方（あるいは両方）が
---- タイムアウトするまで固まる。実機で観測された「同じ読みなのに数ms〜
---- 数千msまで大きくばらつく」「連続する呼び出しの一部だけ極端に遅い」と
---- いう挙動は、この再入による衝突と整合する。
---- そのため in_flight で多重実行を検出し、既に別のリクエストが
---- 進行中なら新しいリクエストは即座に諦める（ソケットには一切触れない）。
-local in_flight = false
+--- どちらのリクエストに対応するのか分からなくなり、片方（あるいは
+--- 両方）がタイムアウトするまで固まる。
+---
+--- v2まではこれを in_flight という単純なフラグで検出し、既に別の
+--- リクエストが進行中なら新しいリクエストは即座に諦めていた（ソケット
+--- には一切触れない）。これで衝突自体は防げていたが、「諦める」＝
+--- 「そのリクエストの結果を黙って捨てる」ため、早打ち時に一部の
+--- 読みの補完結果が理由なく欠落する副作用があった。また、"2"
+--- （バージョン確認）のように、このフラグを見ずに独自にソケットを
+--- 直接叩くコードが後から追加されると、同じ穴に落ちる（実際に
+--- get_version() がこの穴を踏んでいたため、send_request_and_wait()
+--- 経由に修正済み）。
+---
+--- v3では、衝突したリクエストを「捨てる」のではなく「順番待ちの
+--- キューに積む」方式に変更する。ソケットに触れるのは常にキューの
+--- 先頭のジョブ1つだけで、そのジョブが完了（応答受信・タイムアウト・
+--- エラーのいずれか）してから次のジョブが実行される。これにより、
+--- 衝突そのものは従来通り起きず、かつリクエストが失われることもない。
+--- "1"/"4"/"2" のいずれの経路も、必ずこのキューを経由する。
+---@type (fun(finish: fun()))[]
+local queue = {}
+local queue_running = false
+
+--- キュー先頭のジョブを1つ実行する。既に実行中なら何もしない
+--- （そのジョブの finish() 呼び出しから再度呼ばれるのを待つ）。
+local function run_next_in_queue()
+  if queue_running then
+    return
+  end
+  local job = table.remove(queue, 1)
+  if not job then
+    return
+  end
+  queue_running = true
+  job(function()
+    queue_running = false
+    run_next_in_queue()
+  end)
+end
+
+--- ジョブをキューの末尾に積む。キューが空でジョブが1つも実行中でなければ
+--- 即座に実行される。job は完了時に必ず（一度だけ）finish() を呼ぶこと。
+---@param job fun(finish: fun())
+local function enqueue(job)
+  table.insert(queue, job)
+  run_next_in_queue()
+end
+
 --- 直近の接続失敗時刻（uv.now() のミリ秒）。しばらく再試行しない
 --- （サーバーが落ちているたびに毎回タイムアウトを待つと henkan の
 --- 反応が悪くなるため）。
@@ -124,6 +167,13 @@ function M.setup(opts)
   client = nil
   connecting = false
   last_connect_failure = nil
+  -- 【重要】setup() の呼び直し（テスト等）で、待機中のジョブが
+  -- 残ったまま新しい config に切り替わらないよう、キューも空にする。
+  -- 実行中のジョブが既にあれば、それは finish() が呼ばれるまで
+  -- queue_running=true のまま残るが、そのジョブ自身は自分の client
+  -- 参照で完結するため実害はない。
+  queue = {}
+  queue_running = false
 end
 
 ---@return boolean
@@ -274,99 +324,114 @@ function M._parse_response(response)
   return candidates
 end
 
---- "1"（検索）/ "4"（前方一致検索）共通の、コマンド送信〜応答待ちの
---- 実装。command_body はコマンド文字も含めた送信文字列そのもの
---- （例: "1" .. query .. " "、"4" .. query .. " "）。どちらの応答も
---- "\n" で終端されるので、待ち方は共通化できる。
---- 戻り値: "\n" 終端まで受信できた生の応答文字列。config 未設定・
---- 接続失敗・タイムアウトのいずれかなら nil（last_status に理由を残す）。
+--- "1"（検索）/ "4"（前方一致検索）/ "2"（バージョン確認）共通の、
+--- コマンド送信〜応答待ちの実装。command_body はコマンド文字も含めた
+--- 送信文字列そのもの（例: "1" .. query .. " "、"2"）。
+--- is_terminated は「ここまで受信すれば応答は完結している」と判定する
+--- 関数（既定は "\n" 終端。"2" のようにスペース終端のコマンドは
+--- 呼び出し側から渡す）。
+---
+--- 【v3】実際の送受信は enqueue() に積んだジョブの中で行う。同じ接続を
+--- 使い回す都合上、ソケットに触れるのは常にキューの先頭ジョブ1つだけ。
+--- この関数自体は、自分のジョブが完了する（response が埋まるか
+--- タイムアウトする）まで vim.wait() で待ってから返る、従来通りの
+--- 同期的な見た目のAPIのまま。
+--- 戻り値: 終端条件を満たすまで受信できた生の応答文字列。config
+--- 未設定・接続失敗・タイムアウトのいずれかなら nil（last_status に
+--- 理由を残す）。
 ---@param command_body string
----@param is_terminated fun(full: string): boolean  終端条件（既定は "\n" 終端）
+---@param is_terminated (fun(full: string): boolean)|nil
 ---@return string|nil response
 local function send_request_and_wait(command_body, is_terminated)
   is_terminated = is_terminated or function(full)
     return full:find("\n", 1, true) ~= nil
   end
-  if in_flight then
-    -- 既に別のリクエストが進行中。ソケットには一切触れず即座に諦める
-    -- （上の in_flight のコメント参照。ここで手を出すと応答の行が
-    -- どちらのリクエストのものか分からなくなり、両方が壊れる）。
-    last_status = "timeout"
-    debug_notify("skipped: another request already in flight")
-    return nil
-  end
-  in_flight = true
 
   local response = nil
   local connect_ok = nil
   local done = false
 
-  ensure_connected(function(ok)
-    connect_ok = ok
-    if not ok then
-      done = true
+  -- タイムアウト時に、キューの先頭を占有したままにしないよう強制的に
+  -- 進めるための finish。ジョブ内から自然に呼ばれた場合との二重呼び出し
+  -- を防ぐため finished フラグでガードする（enqueue() の契約上、
+  -- finish() は一度しか呼んではいけない）。
+  local finished = false
+  local finish_fn = nil
+  local function finish_once()
+    if finished then
       return
     end
+    finished = true
+    if finish_fn then
+      finish_fn()
+    end
+  end
 
-    local chunks = {}
-    local ok_read = pcall(function()
-      client:read_start(function(err, chunk)
-        if err or not chunk then
-          pcall(function()
-            client:read_stop()
-          end)
-          if not response then
-            -- 接続が切れた。次回また ensure_connected() させる。
+  enqueue(function(finish)
+    finish_fn = finish
+
+    ensure_connected(function(ok)
+      connect_ok = ok
+      if not ok then
+        done = true
+        finish_once()
+        return
+      end
+
+      local chunks = {}
+      local ok_read = pcall(function()
+        client:read_start(function(err, chunk)
+          if err or not chunk then
             pcall(function()
-              client:close()
+              client:read_stop()
             end)
-            client = nil
+            if not response then
+              -- 接続が切れた。次回また ensure_connected() させる。
+              pcall(function()
+                client:close()
+              end)
+              client = nil
+            end
+            done = true
+            finish_once()
+            return
           end
-          done = true
-          return
-        end
-        table.insert(chunks, chunk)
-        local full = table.concat(chunks)
-        if is_terminated(full) then
-          pcall(function()
-            client:read_stop()
-          end)
-          response = full
-          done = true
-        end
+          table.insert(chunks, chunk)
+          local full = table.concat(chunks)
+          if is_terminated(full) then
+            pcall(function()
+              client:read_stop()
+            end)
+            response = full
+            done = true
+            finish_once()
+          end
+        end)
       end)
-    end)
 
-    if not ok_read then
-      done = true
-      return
-    end
+      if not ok_read then
+        done = true
+        finish_once()
+        return
+      end
 
-    debug_notify("send:", command_body)
-    local ok_write = pcall(function()
-      client:write(command_body)
+      debug_notify("send:", command_body)
+      local ok_write = pcall(function()
+        client:write(command_body)
+      end)
+      if not ok_write then
+        done = true
+        finish_once()
+      end
     end)
-    if not ok_write then
-      done = true
-    end
   end)
 
   vim.wait(config.timeout_ms, function()
     return done
   end, 5)
 
-  in_flight = false
-
-  if connect_ok == false then
-    last_status = "connect_failed"
-    debug_notify("connect failed to", config.host .. ":" .. config.port)
-    return nil
-  end
-
-  if not response then
-    last_status = "timeout"
-    debug_notify("timeout waiting for response (timeout_ms=" .. config.timeout_ms .. ")")
-    -- 【重要・実機で発見】タイムアウトしても、それだけでは終わらせない。
+  if not done then
+    -- 【重要】タイムアウトしても、それだけでは終わらせない。
     -- client:read_stop() だけでは不十分（libuv/Lua側のコールバック配送を
     -- 止めるだけで、OS のソケット受信バッファに溜まった「遅れて届いた
     -- 応答」のバイト列そのものは消えない）。そのまま次のリクエストが
@@ -386,6 +451,27 @@ local function send_request_and_wait(command_body, is_terminated)
       end)
       client = nil
     end
+    done = true
+    -- 【重要】キューの先頭を占有したままだと、以降の全リクエストが
+    -- 永久に詰まる。まだジョブ側の非同期コールバックが finish_once()
+    -- を呼んでいない可能性があるので、ここで明示的に進める
+    -- （finished フラグにより、後から本来のコールバックが遅れて
+    -- 発火しても二重には進まない）。
+    finish_once()
+    last_status = "timeout"
+    debug_notify("timeout waiting for response (timeout_ms=" .. config.timeout_ms .. ")")
+    return nil
+  end
+
+  if connect_ok == false then
+    last_status = "connect_failed"
+    debug_notify("connect failed to", config.host .. ":" .. config.port)
+    return nil
+  end
+
+  if not response then
+    last_status = "timeout"
+    debug_notify("timeout waiting for response (timeout_ms=" .. config.timeout_ms .. ")")
     return nil
   end
 
@@ -492,6 +578,12 @@ end
 --- サーバーのバージョン文字列を取得する（"2" コマンド）。エンコーディングに
 --- 依存しない単純な接続確認として使える（かな漢字変換の候補が
 --- 見つからない場合、まずこれで TCP レベルの疎通を切り分けるとよい）。
+---
+--- 【重要・v3】以前は in_flight フラグを見ない独自実装だったため、
+--- check_skkserv() 由来の "2" と、ライブ補完由来の "1"/"4" が同じ
+--- ソケット上でタイミング的に重なると応答が混線する不具合があった。
+--- send_request_and_wait() 経由に統一し、他のコマンドと同じキューを
+--- 共有することで解消している。
 ---@return string|nil version サーバーが応答しなければ nil
 function M.get_version()
   if not config then
@@ -499,12 +591,6 @@ function M.get_version()
     return nil
   end
 
-  -- 【重要】"2" コマンドは in_flight による排他制御を経由しない独自実装
-  -- だったため、check_skkserv() 由来の "2" と、ライブ補完由来の "1"/"4" が
-  -- 同じソケット上でタイミング的に重なると、応答が混線する不具合があった
-  -- （実機で確認：確定文字列の直後にバージョン応答由来と思われるゴミが
-  -- 混入した）。send_request_and_wait() を common 化して経由させることで
-  -- 同じ排他制御の下に置く。
   -- 【重要】"2" コマンドのレスポンスはスペース終端（改行ではない）。
   local response = send_request_and_wait("2", function(full)
     return full:find(" ", 1, true) ~= nil
