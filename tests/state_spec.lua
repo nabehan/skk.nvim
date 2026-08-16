@@ -221,7 +221,12 @@ describe("state: set_reading()（blink.cmp ライブ補完で選ばれた読み�
     state.start_midashi("hira", "k")
     state.input("a")
     state.input("n")
-    assert.are.equal("かん", state.current_reading())
+    -- 【重要】単独の "n" はまだ確定しない（lua/skk/input.lua のルール5:
+    -- "n" + 母音でもyでもnでもない文字、が来て初めて「ん」が確定する）。
+    -- この時点の確定済み読みは "か" のみ。同じ入力列に対する期待値は
+    -- tests/state_spec.lua の「▽ 表示に未確定のローマ字断片が含まれる」
+    -- （"Kan の直後は ▽かn"）でも同様に検証されている。
+    assert.are.equal("か", state.current_reading())
 
     local ok = state.set_reading("かんじ")
     assert.is_true(ok)
