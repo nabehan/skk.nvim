@@ -143,44 +143,55 @@ lua/skk/
 
 ### blink.cmp ネイティブソース統合 (`blink_source.lua`)
 
-skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブソースとしても動作する（`sources.providers` への登録自体はこのプラグインの外、ユーザー設定側の責務。後述「使い方」参照）。`▽`（見出し語入力中）状態のときだけ `dict.lookup_prefix()` による前方一致検索の結果をライブ補完候補として出す（denops版 skkeleton の `getCompletionResult()` 相当）。
+skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブソースとしても動作する（`sources.providers` への登録自体はこのプラグインの外、ユーザー設定側の責務。後述「使い方」参照）。`▽`/abbrev（見出し語入力中）状態のときだけ `dict.lookup_prefix()` による前方一致検索の結果をライブ補完候補として出す（denops版 skkeleton の `getCompletionResult()` 相当）。
 
-**設計上の重要な違い（skkeleton用ソースとの比較）**: skkeleton は `▽`/`▼` を実バッファへの直接書き込みで表示するため、実機で運用している `skkeleton_source.lua` は「実テキストの範囲を textEdit で置換する」方式（`getPreEdit()` で得た文字列の長さ分だけ削って新しい単語を挿入する）が使えた。一方 skk.nvim の `▽`/`▼` は extmark（仮想テキスト）表示で、実バッファには何も書き込まれていない。そのため同じ方式は使えず、`blink_source.lua` では textEdit を「今のカーソル位置への空挿入（no-op）」にとどめ、実際の確定処理（extmarkのクリア・個人辞書への記録・実テキストの挿入）は `execute()` から `henkan/state.lua` の `M.confirm_external(reading, has_okuri, word, annotation)` に委譲する。このトレードオフとして、候補を選ぶ前のライブなゴーストテキストプレビューは出せない（メニュー上のラベル表示・選択・確定そのものは問題なく機能する）。
+**現状の設計（v2）**: ライブ補完で返すのは前方一致する**読みの一覧**のみで、実際の変換候補（漢字）は選択・確定の段階まで一切取得しない。候補を選んで確定（`execute()`）しても、`henkan/state.lua` の `M.set_reading(new_reading)` で `▽` の読みを選んだ文字列に置き換えるだけで、`▽` 状態そのものは終了しない（従来通り `<SPC>` で `▼`（実際の変換候補選択）に進む）。この設計に至った経緯は下記「SKKサーバーとの通信の信頼性」を参照。**読みではなく変換候補そのものをライブ補完に出す設計（v1相当）への再対応は今後の課題**（下記「既知の制限」参照）。
+
+**設計上の重要な違い（skkeleton用ソースとの比較）**: skkeleton は `▽`/`▼` を実バッファへの直接書き込みで表示するため、実機で運用している `skkeleton_source.lua` は「実テキストの範囲を textEdit で置換する」方式が使える。一方 skk.nvim の `▽`/`▼` は extmark（仮想テキスト）表示で、実バッファには何も書き込まれていない。そのため `blink_source.lua` では textEdit を「今のカーソル位置への空挿入（no-op）」にとどめ、実際の状態更新は `execute()` から `M.set_reading()` に委譲する。
 
 **表示の連動**: `henkan/state.lua` は `▽`/`▼` の状態変化のたびに `User autocmd "SkkHenkanChanged"`（skkeleton の `skkeleton-mode-changed` 相当）を `data.phase`/`data.reading`/`data.has_okuri`/`data.source_mode` 付きで発火する。blink.cmp メニューの show()/hide() 自体はこのソースの責務ではなく、ユーザー設定側でこの autocmd を見て行う想定（実機の `nvim-config-blink-skkeleton` の `skkeleton-mode-changed` ハンドラと同じ考え方）。`▼`（候補選択）中は skk.nvim 自身の候補選択ウィンドウと表示が競合するため、blink.cmp 側は抑止するのが前提。
 
-**さらに注意（実機で発見）**: `▽` の間、読みが1文字変わるたびに上記の `SkkHenkanChanged` は毎回発火するが、blink.cmp の `show()` は「メニューが既に開いていて `providers` を指定しない場合は何もしない」というガードを持つ。skkeleton なら実バッファのテキストが変化するので blink.cmp 自身の自動再取得の仕組みに乗れるが、skk.nvim の `▽`/`▼` は extmark 表示で実バッファが変化しないため、その仕組みには乗れない。ユーザー設定側で `show()` を呼ぶときは必ず `providers = { "skk" }` を明示し、メニューが開いているかどうかに関わらず毎回強制的に再トリガーする必要がある（省略すると、▽に入った直後の1回目でメニューが開いた後、読みが伸びても候補リストが更新されないまま止まる）。詳細は下記「使い方」のサンプルコードを参照。
+#### 実装上の既知のクセ（実機で発見）
 
-**さらに注意2（実機で発見）**: `enter_key` は挿入モードだけでなくコマンドラインモード（単語登録UIの `vim.fn.input()` 等）にもマップされるため、コマンドラインモード中に `▽` 変換が行われることがある。`blink_source.lua` の textEdit の range は、コマンドラインモードかどうかで計算を分岐させる必要がある（blink.cmp 自身がコマンドラインモードでは「行番号は常に0」という前提を置いているため、通常バッファの行番号をそのまま使うと候補プレビュー処理がクラッシュする）。`lua/skk/blink_source.lua` の `get_completions()` は既にこの分岐を実装済み。
+- **`show()` の再トリガー**: `▽` の間、読みが1文字変わるたびに `SkkHenkanChanged` は毎回発火するが、blink.cmp の `show()` は「メニューが既に開いていて `providers` を指定しない場合は何もしない」というガードを持つ。skkeleton なら実バッファのテキスト変化で blink.cmp 自身の自動再取得に乗れるが、skk.nvim の `▽`/`▼` は extmark 表示で実バッファが変化しないため乗れない。ユーザー設定側で `show()` を呼ぶときは必ず `providers = { "skk" }` を明示し、メニューが開いているかどうかに関わらず毎回強制的に再トリガーする必要がある（省略すると、▽に入った直後の1回目でメニューが開いた後、読みが伸びても候補リストが更新されないまま止まる）。詳細は下記「使い方」のサンプルコード参照。
+- **コマンドラインモードでの range 計算**: `enter_key` は挿入モードだけでなくコマンドラインモード（単語登録UIの `vim.fn.input()` 等）にもマップされるため、コマンドラインモード中に `▽` 変換が行われることがある。blink.cmp 自身がコマンドラインモードでは「行番号は常に0」という前提を置いているため、`get_completions()` の textEdit range 計算はコマンドラインモードかどうかで分岐させる必要がある（通常バッファの行番号をそのまま使うと候補プレビュー処理がクラッシュする）。実装済み。
+- **キーワード抽出との衝突**: blink.cmp 本体は、どのソースの候補であっても一律に「実バッファのカーソル位置から独自に抽出した『キーワード』」（Unicode の「文字」カテゴリ基準。漢字を含む）を問い合わせ文字列として、各候補の `filterText`（無ければ `label`）に対してファジーマッチをかける（`completion/list.lua` の `list.fuzzy()`）。`is_incomplete_forward`/`is_incomplete_backward` に関わらず必ず行われ、ソース側でバイパスする公式な手段は無い。カーソル直前に実テキストとして漢字や英数字が続いていると、それが丸ごと「キーワード」として抽出され、こちらが返す `filterText`（読みそのもの）とほぼ一致しないためフィルタで全滅し、候補ウィンドウ自体が開かない。対策として `get_completions()` は blink.cmp 自身が実際に抽出するのと同じ関数（`blink.cmp.fuzzy.get_keyword_range()`）を呼んで抽出結果を先読みし、`filterText` の先頭に前置している（blink.cmp の非公開に近い内部実装に依存しているため、blink.cmp のアップデートで壊れる可能性がある。`pcall` で保護済み）。
+- **abbrev モードの対称性**: abbrev モード（`/` から始める、見出しが ASCII 文字列そのものになるモード）でも `▽` と同様にライブ補完が効くべきだが、当初 `get_completions()` が `phase == "midashi"` のみを対象にしていたため、abbrev モード中は候補ウィンドウが一切出ない不具合があった。`henkan/state.lua` の実際の変換候補検索（`M.space()`/`M.search()`）は元々 `"midashi"` と `"abbrev"` を対称に扱っているため、`get_completions()` の phase 判定にも `"abbrev"` を追加して修正済み。ユーザー設定側の `enabled()` と `SkkHenkanChanged` ハンドラの phase 判定にも、同様に `"abbrev"` を含める必要がある（下記「使い方」参照）。
 
-**さらに注意3（実機で発見・重要）**: blink.cmp 本体は、どのソースの候補であっても一律に「実バッファのカーソル位置から独自に抽出した『キーワード』」を問い合わせ文字列として、各候補の `filterText`（無ければ `label`）に対してファジーマッチをかける（`completion/list.lua` の `list.fuzzy()`）。これは `is_incomplete_forward`/`is_incomplete_backward` の指定に関わらず必ず行われ、ソース側でバイパスする公式な手段は無い。この抽出は Unicode の「文字」カテゴリ（漢字を含む）を対象にしているため、カーソル直前に実テキストとして漢字や英数字が続いていると、それが丸ごと「キーワード」として抽出される。抽出された文字列（例：「漢字」）とこちらが返すかな漢字変換候補（`filterText = "かん"` 等）はほぼ一致しないため、フィルタで全滅し候補ウィンドウ自体が開かない（間に半角スペースを挟むとキーワードが空文字列になり単に全件通過するだけなので症状が出ない）。対策として `lua/skk/blink_source.lua` は blink.cmp 自身が実際に抽出するのと同じ関数（`blink.cmp.fuzzy.get_keyword_range()`）を呼んで抽出結果を先読みし、`filterText` の先頭に前置している（blink.cmp の非公開に近い内部実装に依存しているため、blink.cmp のアップデートで壊れる可能性がある。`pcall` で保護済み）。
+#### 外部UI（blink.cmp）とのキー競合と `passthrough_guard`（実機で発見・重要）
 
-**さらに注意4（実機で発見）**: abbrev モード（`/` から始める、見出しが ASCII 文字列そのものになるモード）でも `▽` と同様にライブ補完が効くべきだが、`get_completions()` が `phase == "midashi"` のみを対象にしていたため、abbrev モード中は候補ウィンドウが一切出ない不具合があった。`henkan/state.lua` の実際の変換候補検索（`M.space()`/`M.search()`）は元々 `"midashi"` と `"abbrev"` を対称に扱っており（abbrev では `session.reading` が ASCII 文字列になるだけで、検索キーとして扱う点は同じ）、blink.cmp 側のライブ補完だけこの対称性が崩れていた。`get_completions()` の phase 判定に `"abbrev"` を追加して修正済み。ユーザー設定側の `enabled()` と `SkkHenkanChanged` ハンドラの phase 判定にも、同様に `"abbrev"` を含める必要がある（上の「使い方」のサンプルコード参照）。
+`capture.lua` は `vim.on_key()` で全キー入力を監視しているが、**`vim.on_key()` は観測専用のAPIで、他プラグイン（blink.cmp）が `vim.keymap.set()` で明示的にバインドしたキーの発火そのものは止められない**。そのため、`▽`/abbrev 中に blink.cmp の accept 等に割り当てられているキーが来ると、次の2つが**独立に、同時に**発火してしまう不具合があった。
 
-**SKKサーバーをライブ補完にも含める**: 既定では `skip_skkserv=true` で、`▽`/`▼` のライブ補完は個人辞書・ローカル辞書のみで完結させている（上の「さらに注意」参照。SKKサーバーを含めるとキー入力のたびに最大 `max_items+1` 回の同期TCPラウンドトリップが発生しうるため）。実際どの程度の体感になるかは辞書構成やSKKサーバーの実装・応答速度に依存するので、`require("skk").setup({ blink = { skip_skkserv = false } })` で無効化し、SKKサーバーの候補もライブ補完に含めて試すことができる。
+1. blink.cmp 自身のキーマップ（`execute()` → `set_reading()`。意図通り）
+2. skk.nvim 側の「未対応キー（`<CR>` 含む）は、そのままの読みを確定して `▽` を抜ける」という自動確定ロジック（`henkan_state.confirm()`。実バッファへの本当の挿入 + `▽` 状態の終了を伴う）
 
-**さらに注意5（実機で発見・重要）**: `skip_skkserv = false` で実測したところ、1回の見出し語入力で数秒単位の遅延が発生した（`lookup_loop` が数千msに達することがあった）。原因は `dict/skkserv.lua` の TCP ソケットに `TCP_NODELAY` を設定していなかったこと。Nagle のアルゴリズム（送信側が小さいパケットをまとめようと少し待つ）と受信側の遅延ACK（すぐACKを返さず、送るデータがあれば相乗りさせようと少し待つ）が組み合わさると、"1<reading> " のような小さいリクエストの往復のたびに ~40ms 前後の人為的な遅延が発生する（ローカルホストでも発生する、TCPの典型的な落とし穴）。1回の見出し語入力につき最大 `max_items+1` 回もこの往復が発生しうる設計のため、これが積み重なって数秒単位の遅延になっていた。`connect_to_ip()` で `sock:nodelay(true)` を呼ぶよう修正済み。それでも、最大 `max_items+1` 回の**逐次**（並列化していない）同期往復という設計自体は変わっていないため、`nodelay` だけでは根本的な往復回数の多さは解消しない。実測して、それでも遅ければ「複数のリクエストをまとめて送ってから応答をまとめて受け取る」というパイプライン化が次の一手になる。
+blink.cmp の既定キーマップ（`<C-y>` = accept）で検証していたときは気づかなかったが、実機の設定（[nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton)）は `keymap.preset = "none"` の全面カスタムで、`<C-y>` ではなく `<CR>` を accept に割り当てていた。**特定のキーを決め打ちで「blink.cmp用に予約」する対策は、こうした環境では機能しない**（`<CR>` は元々 skk.nvim 自身が「確定」の意味で使うキーでもあるため、決め打ちリストに含めても本質的な解決にならない）。
 
-**さらに注意6（実機で発見・重要）**: `nodelay` を入れた後も、同じ読みなのに数msから数千msまで大きくばらつく現象が残っていた。原因は「接続を1本だけ使い回し、次に届いた1行を今送ったリクエストへの応答とみなす」という `send_request_and_wait()` の前提が、**再入（reentrancy）で崩れる**こと。`send_request_and_wait()` は内部で `vim.wait()` を使うが、`vim.wait()` は待っている間もイベントループを回す（タイマー・autocmd・キー入力処理が普通に進む）。応答待ち中にユーザーが次のキーを叩くと、そのキー入力が `SkkHenkanChanged` を発火させ、blink.cmp 側が新たな `get_completions()` を呼び、そこから再び `send_request_and_wait()` が再入して同じソケットに `read_start()`/`write()` をかけてしまうことがある。すると応答の行がどちらのリクエストに対応するのか分からなくなり、片方（あるいは両方）がタイムアウトするまで固まる。
+対策として、`capture.lua` に `M.set_passthrough_guard(fn)` を追加した。`fn(key)` が `true` を返す間、`▽`/abbrev 中の `<CR>`・「未対応キー」による自動確定ロジックを一切実行しない（キーの種類は問わない）。`blink_source.lua` の `source.setup()` は、この `fn` として `require("blink.cmp").is_visible()`（メニュー or ゴーストテキストが見えているかを返す、キー割り当てに依存しない公開API）を自動的に登録する。**「特定のキー」ではなく「外部UIが今まさに見えているか」で判定する**ことで、ユーザーが blink.cmp 側でどのキーをどう割り当てていても機能する。
 
-初期対策は `in_flight` という単純なフラグで、既に別のリクエストが進行中なら新しいリクエストはソケットに一切触れず即座に諦める（空扱いで返す）というものだった。これで衝突自体は防げたが、「諦める」＝「そのリクエストの結果を黙って捨てる」ため、早打ち時に一部の読みの補完結果が理由なく欠落する副作用があった。また `"2"` コマンド（`M.get_version()`）だけこのフラグを見ずに独自にソケットへ直接アクセスするコードになっており、同じ穴に落ちる余地が残っていた。
+なお `vim.on_key()` の性質上、skk.nvim 側がこのガードで自分の処理を止めても、blink.cmp 自身のキーマップの発火を妨げる・妨げられるわけではない（そちらは元々 Neovim の通常のキーマップ解決で独立に処理される）。このガードの目的は「skk.nvim 側が重複して確定処理をしてしまう」ことを防ぐことにある。ローマ字の読み入力そのもの（`is_target_key` に該当する文字）は、外部UI表示中でも従来通り継続できるよう対象外にしてある。回帰テストは `tests/capture_henkan_routing_spec.lua` の「外部UI（blink.cmp等）への委譲（passthrough_guard）」参照。
 
-最終的に、衝突したリクエストを「捨てる」のではなく「順番待ちのキューに積む」方式（`enqueue()`/直列実行）に置き換えた。ソケットに触れるのは常にキュー先頭のジョブ1つだけで、そのジョブが完了（応答受信・タイムアウト・エラーのいずれか）してから次のジョブが実行される。`"1"`/`"4"`/`"2"` いずれのコマンドもこのキューを共有するため、`get_version()` だけが排他制御の外にいる、という抜け穴も無くなった。
+#### SKKサーバーをライブ補完にも含める
 
-**さらに注意7（実機で発見・重要）**: `in_flight` ガード導入後も、`;j` のような短い読み1回の入力で数秒〜1万msの遅延が実測された。`debug=true` で送受信の生データを見たところ、通信そのものは正常に完了しており（応答は届いている）、原因は通信ではなく**候補のパース・変換処理**にあった。`_parse_response()` が候補1件ごとに（単語＋注釈で最大2回）`vim.fn.iconv()` を呼んでいたが、`vim.fn.iconv()` は呼び出しのたびに VimL の関数ディスパッチを経由するオーバーヘッドがあり、候補数の多い読み（「じ」のようなよくある1文字の読みだと数百件になることがある）ではこの呼び出し回数自体が数百〜千回に達し、体感できるレベルで重くなっていた。対策として、応答本体をまず1回だけ丸ごと UTF-8 に変換してから候補に分割するよう変更した（`"/"` は EUC-JP・UTF-8 いずれの多バイト文字の続きバイトにもならないため、変換の前後どちらで分割しても結果は同じ）。`M._parse_prefix_response()`（"4" コマンドの読み一覧）も同様に修正済み。
+既定では `skip_skkserv=true` で、`▽`/`▼` のライブ補完は個人辞書・ローカル辞書のみで完結させている（SKKサーバーを含めるとキー入力のたびに最大 `max_items+1` 回の同期TCPラウンドトリップが発生しうるため）。`require("skk").setup({ blink = { skip_skkserv = false } })` で無効化し、SKKサーバーの候補もライブ補完に含めて試すことができる。
 
-**さらに注意8（実機で発見・重要）**: さらに注意7の修正後も、`jawiki`（24MB）を追加した状態で `skip_skkserv=false` にすると数秒〜1万msの遅延が再現した。`debug=true` の送受信ログを見たところ、通信自体は完了しているのに `send_request_and_wait()` が繰り返しタイムアウトし、しかも**タイムアウトしたはずのリクエストへの応答が、数リクエスト後になって届き、別の（無関係な）リクエストへの応答として誤って受け取られる**現象が起きていた（例：1つ前のリクエストへの「該当なし」応答 `4...` が、3リクエスト後になって受信され、そちらの応答として処理されてしまう）。
+#### SKKサーバーとの通信の信頼性（実機で発見・重要、時系列順）
 
-原因は2つ重なっていた。
+`skip_skkserv = false` を実機で検証する過程で、いくつもの遅延・タイムアウト・応答取り違えの問題を発見・修正した。
 
-1. `send_request_and_wait()` はタイムアウトすると `nil` を返すだけで、`client:read_stop()` を呼んでいなかった。`read_stop()` を呼んだとしても、OS 側のソケット受信バッファに溜まった「遅れて届いた応答」のバイト列そのものは消えないため、次のリクエストが同じ接続で `read_start()` すると、その残っていたバイト列を「次のリクエストへの応答」として誤って受け取ってしまう。対策として、タイムアウト時は接続を `read_stop()` + `close()` して `client = nil` にし、次回は必ず新しい接続を張り直すようにした（ローカルホストなら再接続のコストは軽微）。
-2. そもそもの引き金は、`jawiki` 辞書に含まれる `t(concat "\057")c`（SKKのプログラム候補構文がそのまま読みとして紛れ込んだもの）のような変則的なエントリだった。読みの中に空白が含まれるため、`M._parse_prefix_response()` の以前のトークナイズ（`"[^/%s]+"`。空白でも区切っていた）がこれを誤って2つの読みに分割し、断片化した読み（例 `"\057")c`）をサーバーに問い合わせて見つからず、これがきっかけで上記1のタイムアウト連鎖が始まった。区切りを `"/"` のみにする（`"[^/]+"`）よう修正済み。
-
-1の修正（タイムアウト時の接続リセット）は、原因が何であれ「一度タイムアウトが起きたら、そこから先の応答の対応関係が信用できなくなる」という構造的な問題そのものへの対策なので、他の予期しない変則エントリに対しても効くはず。2の修正は今回発見した具体的な引き金への対症療法。
+1. **TCP_NODELAY 未設定**: Nagle のアルゴリズムと受信側の遅延ACKが組み合わさり、`"1<reading> "` のような小さいリクエストの往復のたびに ~40ms 前後の遅延が発生していた（ローカルホストでも起きる、TCPの典型的な落とし穴）。1回の見出し語入力につき最大 `max_items+1` 回もこの往復が発生しうる設計のため、積み重なって数秒単位の遅延になっていた。`connect_to_ip()` で `sock:nodelay(true)` を呼ぶよう修正済み。
+2. **応答の取り違え（再入）**: 接続を1本だけ使い回し「次に届いた1行 = 今送ったリクエストへの応答」とみなす `send_request_and_wait()` の前提が、`vim.wait()` の待機中もイベントループが回る（＝キー入力処理が普通に進む）ことによる**再入**で崩れることがあった。初期対策の `in_flight` フラグ（衝突したら即座に諦める）は衝突は防いだが、リクエストが黙って欠落する副作用があった。最終的に、衝突したリクエストを「捨てる」のではなく「順番待ちのキューに積む」直列キュー方式（`enqueue()`）に置き換えた（詳細は上記「SKKサーバー」節）。
+3. **候補パースのオーバーヘッド**: `_parse_response()` が候補1件ごとに `vim.fn.iconv()` を呼んでいたため、候補数の多い読み（数百件になることがある）で体感できるレベルに遅くなっていた。応答本体を1回だけ丸ごと UTF-8 に変換してから候補に分割するよう修正済み（`M._parse_prefix_response()` も同様）。
+4. **タイムアウト後の残留データ**: `send_request_and_wait()` はタイムアウトしても接続を閉じていなかったため、OS側のソケット受信バッファに残った「遅れて届いた応答」を、次の無関係なリクエストへの応答として誤って受け取ってしまうことがあった。タイムアウト時は接続を `close()` して `client = nil` にし、次回は必ず新しい接続を張り直すよう修正済み。
+5. **辞書側の変則エントリ**: 上記4の引き金として、`jawiki` 辞書に含まれる `t(concat "\057")c`（SKKのプログラム候補構文がそのまま読みとして紛れ込んだもの）のような、読みの中に空白を含む変則エントリが、`M._parse_prefix_response()` の以前のトークナイズ（空白でも区切っていた）によって誤分割され、存在しない断片をサーバーに問い合わせる原因になっていた。区切りを `"/"` のみにするよう修正済み。
 
 **送りありの前方一致補完は現時点で提供していない**（`dict.lookup_prefix()` は okuri-nasi のみに絞っている。プロトコル・実用上の理由による）。
 
-**未検証（実機配線待ち）**: コード側（ソース本体・状態通知・確定委譲・単体テスト `tests/blink_source_spec.lua`）は揃っているが、実際に実機の `nvim-config-blink-skkeleton` 側の設定を書き換えて skk.nvim を差し込む配線・動作確認はまだ行っていない（下記「既知の制限」も参照）。
+#### 実機での検証状況
+
+独立したサンドボックス環境（[nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox)）で、通常バッファ・コマンドラインモードの両方について、ライブ補完の表示・更新・`<C-n>`/`<C-p>` での選択・確定・`<SPC>` でのskk.nvim本来の変換への移行まで、応答速度を含めて動作確認済み。実機の日常設定（[nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton)）への実際の配線はまだ行っていない。
+
+**送りありの前方一致補完は現時点で提供していない**（`dict.lookup_prefix()` は okuri-nasi のみに絞っている。プロトコル・実用上の理由による）。
 
 ### モードインジケーター (`mode_indicator.lua`)
 
@@ -234,7 +245,7 @@ skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブ
   - （技術的コスト）内蔵ターミナルはNeovimの通常のバッファではなくPTYであり、`nvim_buf_set_text()`のような直接書き込みができず、確定した文字列を`chansend()`でPTYにバイト列として送る形になる。未確定のローマ字断片の literal display や `▽`/`▼` のpreedit表示、それを`<BS>`等で書き換える操作を、PTYへのバイト列送出という一方向的な手段だけで安全に実現するのは実装難易度が大きく上がる。実際、[skkeleton](https://github.com/vim-skk/skkeleton)を内蔵ターミナルで試した際、`<C-j>`で有効化はできるものの確定したはずの文字がターミナルに残らない不具合が実機で確認されている。
   - （費用対効果）内蔵ターミナル上で日本語などの長文を入力する機会はもともと少なく、また内蔵ターミナルではシェル補完は効くが`blink.cmp`のような補完エンジンは機能しないため、このプラグインが元々解決しようとした課題（`blink.cmp`との相性、上記「なぜ作るか」参照）にとって内蔵ターミナル対応の価値は薄いと判断した。
 - `<Left>`/`<Right>` などのカーソル移動キーやマウスクリックは、henkan 非アクティブ時の未確定ローマ字バッファについては安全に扱える（`is_target_key` に該当しないキーが来た時点でバッファを無条件にリセットするため、確定済みかなを破壊するようなバイト列破損は起こらない）が、**表示上の不整合**（未確定ローマ字がそのまま残る）は起こりうる。henkan（▽/▼）アクティブ中にこれらのキーが来た場合の挙動は未検証。
-- blink.cmp のネイティブソースとしての統合は、コード側（`blink_source.lua`、`SkkHenkanChanged` 状態通知、確定委譲、単体テスト）は実装済み。独立したサンドボックス環境（[nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox)）での動作確認は完了し、その過程で見つかった `show()` 再トリガーの不具合（上記「blink.cmp ネイティブソース統合」の「さらに注意」参照）も修正済み。ただし実機の日常設定 [nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) への実際の配線・動作確認はまだ行っていない。設計上、送りありの前方一致補完は非対応、候補を選ぶ前のライブなゴーストテキストプレビューも出せない。
+- blink.cmp のネイティブソースとしての統合は、現状ライブ補完で**読みのみ**を返す設計（v2）。サンドボックス環境（[nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox)）で通常バッファ・コマンドラインモード双方の動作確認が完了しており、その過程で見つかった `show()` 再トリガーの不具合・外部UIとのキー競合（`passthrough_guard`、上記「blink.cmp ネイティブソース統合」参照）も修正済み。実機の日常設定 [nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) への実際の配線はまだ行っていない。実際の変換候補（漢字）をライブ補完に表示する設計への拡張（v1相当の再導入）は今後の課題。設計上、送りありの前方一致補完は非対応、候補を選ぶ前のライブなゴーストテキストプレビューも出せない。
 - `egg_like_newline = false`（SKK本来の、確定+改行の動作）は実装・動作確認済みだが、`vim.api.nvim_feedkeys()` で `<CR>` を再注入する方式のため、`<CR>` に他プラグインのマッピングが被っている環境では想定外の相互作用が起こる可能性がある。
 - 候補選択ウィンドウの表示位置自動切替（上下）は `vim.fn.screenpos()` の実測に依存するため、`nvim --headless`（UI未接続）環境ではテストできない（実機での動作確認のみ）。
 - モードラインへのモード表示（現状はカーソル位置への一時的なインジケーターのみ）は未実装。
@@ -419,7 +430,7 @@ PLENARY_DIR=~/.local/share/nvim/lazy/plenary.nvim \
 8. ~~個人辞書・学習（recency-based の並び替え）~~ ✅
 9. ~~複数辞書のマージ・skkserv 連携~~ ✅
 10. ~~単語登録（候補が見つからない読みをその場で辞書に追加する）~~ ✅（`vim.fn.input()` の再帰呼び出しによるUI。再帰的な単語登録も可能。実機確認済み、上記「単語登録UI」参照）
-11. blink.cmp ネイティブソースとしての統合 — コード側（`blink_source.lua`、状態通知、確定委譲、単体テスト）は実装済み。実機の [nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) への配線・動作確認が次のステップ（詳細は上記「blink.cmp ネイティブソース統合」「既知の制限」参照）
+11. blink.cmp ネイティブソースとしての統合 — 読みのみのライブ補完（v2設計）はサンドボックス環境（[nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox)）で動作確認済み ✅。実際の変換候補（漢字）を出す設計への拡張と、実機の日常設定への配線が次のステップ（詳細は上記「blink.cmp ネイティブソース統合」「既知の制限」参照）
 12. ~~周辺 UI（モードインジケーター）~~ ✅（カーソル位置への一時表示のみ。モードライン表示は未着手）
 13. ~~コマンドラインモードへの対応~~ ✅（`target.lua`。ローマ字→かな変換・4モード切替・モードインジケーター・辞書変換（`▽`/`▼`、候補選択ウィンドウ）まで実機確認済み。内蔵ターミナルは非対応と決定、下記「既知の制限」参照）
 14. `vim.uv.new_work()` によるスレッドプール並列パース（大きな辞書の起動負荷をさらに削減）
@@ -431,4 +442,5 @@ PLENARY_DIR=~/.local/share/nvim/lazy/plenary.nvim \
 - [yuys13/skk-develop.nvim](https://github.com/yuys13/skk-develop.nvim) — SKK辞書ダウンローダー
 - [wachikun/yaskkserv2](https://github.com/wachikun/yaskkserv2) — skkserv 連携の実機動作確認に使用したSKKサーバー
 - [Saghen/blink.cmp](https://github.com/Saghen/blink.cmp) — ネイティブソースのAPI（`get_completions`/`execute`/`resolve`、`default_implementation` を自分で呼ぶ必要がある点等）を `blink_source.lua` 実装前に読んで参考にした
-- [nabehan/nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) — 実機で skkeleton + blink.cmp を運用している設定一式。`skkeleton_source.lua`（textEdit の range 計算、`default_implementation` 呼び出し忘れの教訓）や `blink.lua`（`▽`/`▼` に合わせた show()/hide()、`▼` 中の抑止）を `blink_source.lua` 設計時に参考にした
+- [nabehan/nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) — 実機で skkeleton + blink.cmp を運用している設定一式。`skkeleton_source.lua`（textEdit の range 計算、`default_implementation` 呼び出し忘れの教訓）や `blink.lua`（`▽`/`▼` に合わせた show()/hide()、`▼` 中の抑止、キーマップ設定）を `blink_source.lua` 設計時に参考にした。実機が既定の `<C-y>` ではなく `<CR>` を accept に割り当てていた事実は `passthrough_guard` の設計（キー決め打ちではなく `is_visible()` 判定にする）を見直す決め手になった
+- [nabehan/nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox) — 実機の日常設定とは切り離して blink.cmp 統合を検証するための、NVIM_APPNAME方式のサンドボックス環境
