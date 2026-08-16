@@ -86,6 +86,26 @@ function source.setup(opts)
   if opts.skip_skkserv ~= nil then
     config.skip_skkserv = opts.skip_skkserv
   end
+
+  -- 【重要・実機で発見】blink.cmp のライブ補完メニューが見えている間、
+  -- capture.lua 側の「▽/abbrevで<CR>・未対応キーが来たら確定して抜ける」
+  -- という自動確定ロジックを止める。止めないと、ユーザーが blink.cmp の
+  -- accept 等に割り当てているキー（実機の設定では既定の <C-y> ではなく
+  -- <CR> だった）に対して、blink.cmp 自身のキーマップと skk.nvim 側の
+  -- 自動確定が二重に反応し、選択直後の読みが実バッファへ本当に挿入
+  -- されたうえで▽状態も終了してしまう不具合があった。
+  --
+  -- どのキーが blink.cmp のどの操作に割り当てられているかはユーザーの
+  -- keymap 設定次第で分からないため、特定のキーを決め打ちで判定するのは
+  -- やめ、blink.cmp 自身の公開API `is_visible()`（メニュー or ゴースト
+  -- テキストが見えているか）で判定する。
+  require("skk.capture").set_passthrough_guard(function(_key)
+    local ok, blink = pcall(require, "blink.cmp")
+    if not ok then
+      return false
+    end
+    return blink.is_visible()
+  end)
 end
 
 function source.new()

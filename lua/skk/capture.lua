@@ -59,6 +59,21 @@ local M = {}
 local context = Context.new()
 local ns_id = nil
 
+--- 「今このキーは外部UI（blink.cmp等）に委ねるべきか」を判定する関数。
+--- blink_source.lua 等、外部UI連携を提供する側が M.set_passthrough_guard()
+--- で登録する。未登録（nil）ならこれまで通りの挙動（常にSKK自身が
+--- <CR>・未対応キーを確定処理する）。
+---@type (fun(key: string): boolean)|nil
+local passthrough_guard = nil
+
+--- 外部UI連携用のフック。fn(key) が true を返す間、▽/abbrev の
+--- <CR>・catch-all による自動確定を行わない（handle_henkan_key 内の
+--- defer_to_external_ui 参照）。nil を渡すと解除する。
+---@param fn (fun(key: string): boolean)|nil
+function M.set_passthrough_guard(fn)
+  passthrough_guard = fn
+end
+
 --- lua/skk/init.lua の M.setup() から差し込まれるオプション。
 --- モジュールのトップレベルでは vim.* に触れないプレーンな値のみ
 --- 保持する（この設計方針は他のモジュールと同様）。
@@ -214,7 +229,39 @@ end
 ---@return boolean reprocess true なら、このキーは確定処理のうえで
 ---  通常の直接入力として再処理してほしい、という意味（on_key 側が続けて処理する）
 local function handle_henkan_key(key)
+  local phase = henkan_state.get_phase()
+
+  -- 【重要・実機で発見】blink.cmp 等、外部の補完UIが▽/abbrevの読み一覧を
+  -- 表示している間、そのUIのどのキーが accept/next/hide 等に割り当て
+  -- られているかは、ユーザーの keymap 設定次第で全く異なる（実機では
+  -- keymap.preset="none" で全面カスタムしており、既定の <C-y> ではなく
+  -- <CR> が accept に割り当てられていた）。個別のキーを決め打ちで
+  -- 「外部UI用に予約」する方式は、こうした環境では機能しない。
+  --
+  -- そこで「特定のキー」ではなく「外部UIが今まさに見えているか」を
+  -- passthrough_guard(key) で判定する方式にする。true が返る間は、
+  -- ▽/abbrev 側の「<CR>／未対応キーは確定して抜ける」という自動確定
+  -- ロジックを丸ごと止め、そのキーの解釈をNeovimのキーマップ解決
+  -- （＝外部UI側の設定）に完全に委ねる。なお vim.on_key() はキーマップの
+  -- 発火そのものを止められない（観測専用）ため、ここで skk.nvim 側の
+  -- 処理を止めても外部UI側のキーマップの実行は妨げない・妨げられない。
+  -- 目的はあくまで「skk.nvim 側が重複して確定処理をしてしまう」ことを
+  -- 防ぐことにある。
+  --
+  -- ローマ字の読み入力そのもの（is_target_key に該当する文字。この関数の
+  -- 後段で処理する）は、外部UI表示中でも従来通り継続できないと困るため、
+  -- ここでは対象にしない（<CR>・両catch-allの「未対応キー」判定のみを
+  -- 対象にする）。
+  local defer_to_external_ui = (phase == "midashi" or phase == "abbrev")
+    and passthrough_guard ~= nil
+    and passthrough_guard(key)
+
   if key == CR then
+    if defer_to_external_ui then
+      -- <CR> はここでは何もしない。外部UI側のマッピング（accept等）に
+      -- そのまま委ねる。SKK独自の「読みをそのまま確定」は行わない。
+      return false
+    end
     henkan_state.confirm()
     if not config.egg_like_newline then
       -- SKK本来の動作: 確定に加えて改行も行う。henkan_state.confirm() の
@@ -244,8 +291,6 @@ local function handle_henkan_key(key)
     henkan_state.space()
     return false
   end
-
-  local phase = henkan_state.get_phase()
 
   if phase == "select" then
     if key == "x" then
@@ -303,7 +348,11 @@ local function handle_henkan_key(key)
       return false
     end
     -- 矢印キー等、印字可能ASCIIでないキーが来たら、ここまでの見出しを
-    -- 確定する（▽状態の「未対応のキー」と同じ考え方）。
+    -- 確定する（▽状態の「未対応のキー」と同じ考え方）。ただし外部UIが
+    -- 見えている間はそちらに委ねる（defer_to_external_ui 参照）。
+    if defer_to_external_ui then
+      return false
+    end
     henkan_state.confirm()
     return false
   end
@@ -342,6 +391,19 @@ local function handle_henkan_key(key)
   -- このキー自体は新しい入力として直接入力に引き継ぐ。
   -- 矢印キー等の特殊キー（印字可能ASCIIでないもの）は再処理の対象外
   -- とし、確定だけ行う（literal 挿入すると壊れるため）。
+  --
+  -- 【重要・実機で発見】ただし外部UI（blink.cmp等）が見えている間は
+  -- この自動確定を行わない（defer_to_external_ui 参照）。ここで確定＋
+  -- 実バッファへの挿入をしてしまうと、外部UI側のキーマップ（例:
+  -- <C-y>=accept、<C-n>/<C-p>=次候補/前候補 等、ユーザーの設定次第）が
+  -- 同じキー入力に対して独立に反応した結果と二重に実行され、確定済みの
+  -- 読みが実バッファへ本当に挿入されたうえで▽状態も終了してしまう
+  -- （実機で確認した不具合そのもの。vim.on_key() は他プラグインの
+  -- キーマップの発火を止められないため、片方だけ止めても両方止まる
+  -- わけではないが、少なくとも skk.nvim 側の重複動作は防げる）。
+  if defer_to_external_ui then
+    return false
+  end
   henkan_state.confirm()
   return is_printable_ascii(key)
 end
