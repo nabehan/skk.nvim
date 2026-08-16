@@ -259,6 +259,17 @@ end
 --- ではなく、あくまで読みの補完に留まる。ユーザーは従来通り <SPC> で
 --- ▼（実際の変換候補選択）に進む。
 function source:execute(_, item, callback, default_implementation)
+  -- -- ★暫定：ゴミ混入バグの原因切り分け用。原因特定後に削除。
+  -- vim.schedule(function()
+  --   vim.notify(
+  --     "[skk debug] execute: label="
+  --       .. vim.inspect(item.label)
+  --       .. " reading="
+  --       .. vim.inspect((item.data or {}).reading)
+  --       .. " textEdit="
+  --       .. vim.inspect(item.textEdit)
+  --   )
+  -- end)
   default_implementation()
 
   local data = item.data or {}
