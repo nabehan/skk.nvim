@@ -35,4 +35,16 @@ end
 vim.opt.runtimepath:append(".")
 vim.opt.runtimepath:append(plenary_dir)
 
+-- blink.cmp は tests/blink_source_spec.lua が「rtp にあれば実行、無ければ
+-- pending」で自己判定する外部プラグイン依存（このリポジトリはblink.cmp
+-- を同梱しない）。BLINK_DIR 環境変数（PLENARY_DIR と同じ考え方）でパスを
+-- 指定すると、その分のテストも実際に実行されるようになる。
+local blink_dir = first_existing({
+  os.getenv("BLINK_DIR"),
+  os.getenv("HOME") .. "/.local/share/nvim/lazy/blink.cmp", -- lazy.nvim を個人環境で使っている場合
+})
+if blink_dir then
+  vim.opt.runtimepath:append(blink_dir)
+end
+
 vim.cmd("runtime plugin/plenary.vim")
