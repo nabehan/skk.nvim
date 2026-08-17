@@ -306,18 +306,25 @@ end
 --- 実際の候補一覧を得る想定（M.lookup() が既に持っている優先順位
 --- マージのロジックをここで重複実装せずに済むため）。
 ---
---- 【実機で発見した重要な注意】上の「二度手間」は、個人辞書・ローカル
---- 辞書だけなら実用上問題にならないが、SKKサーバーが有効だと話が別。
+--- 【実機で発見した重要な注意（v1で踏んだ地雷）】個人辞書・ローカル
+--- 辞書だけなら「読みの件数だけ M.lookup() を呼ぶ」二度手間は実用上
+--- 問題にならないが、SKKサーバーが有効だと話が別。まず
 --- M.lookup_prefix() 自体が "4" コマンドで1回、さらに呼び出し側が
---- 読みの件数（最大 max_results 件、既定50件）だけ M.lookup() を呼ぶと
---- そのたびに "1" コマンドが飛ぶため、キー入力のたびに最大 51 回もの
---- 同期TCPラウンドトリップが発生し、体感できるレベルで重くなる
---- （skkserv.lua の M.lookup()/M.lookup_prefix() は vim.wait() で
---- ポーリング待機する同期ラッパーのため）。そのため
---- blink_source.lua は skip_skkserv=true を指定し、ライブ補完では
---- SKKサーバーに一切問い合わせない（個人辞書・ローカル辞書のみで
---- 完結させる）。SKKサーバーを含めた完全な検索は、実際の変換確定操作
---- （スペースキーでの▼への遷移）でのみ行われる。
+--- 読みの件数（最大 max_results 件）だけ無条件に M.lookup() を呼ぶと
+--- そのたびに "1" コマンドが飛び、キー入力のたびに大量の同期TCP
+--- ラウンドトリップが発生して体感できるレベルで重くなる。加えて、
+--- ここで返す読み一覧は個人辞書・ローカル辞書・SKKサーバーの
+--- 「和集合」なので、SKKサーバー自身の辞書には存在しない読み
+--- （ローカル辞書だけが知っている読み）も混ざる。そういう読みに
+--- うっかり "1" を投げると skkserv 側で notfound となり、
+--- yaskkserv2 のGoogle日本語入力フォールバック（数秒単位で詰まりうる）
+--- を誘発しかねない。
+---
+--- そのため第2戻り値 from_skkserv（reading をキーにした集合テーブル、
+--- SKKサーバー自身の "4" 応答に含まれていた読みだけ true）を用意して
+--- いる。呼び出し側（blink_source.lua）はこれを見て、SKKサーバーの
+--- "4" 応答に実在が確認できた読みに対してだけ、件数上限つきで "1" を
+--- 投げる設計にしている（notfound地雷を踏まず、往復回数も抑えられる）。
 ---
 --- 送りありの前方一致は、まだ現実的な使い道が薄い（送り仮名の子音まで
 --- 打ち終わらないと reading が定まらないため）ことと、SKKサーバーの
@@ -329,13 +336,15 @@ end
 ---@param max_results integer
 ---@param skip_skkserv boolean|nil true の場合、SKKサーバーへは問い合わせない。省略時 false。
 ---@return string[] readings 前方一致した読み（重複無し、昇順ソート済み）
+---@return table<string, boolean> from_skkserv 読み→true。SKKサーバー自身の"4"応答に含まれていた読みの集合
 function M.lookup_prefix(prefix, has_okuri, max_results, skip_skkserv)
   if prefix == "" then
-    return {}
+    return {}, {}
   end
 
   local seen = {}
   local result = {}
+  local from_skkserv = {}
 
   local function add_all(readings)
     for _, reading in ipairs(readings) do
@@ -349,7 +358,11 @@ function M.lookup_prefix(prefix, has_okuri, max_results, skip_skkserv)
   add_all(user_dict.lookup_prefix(prefix, has_okuri, max_results))
 
   if not has_okuri and not skip_skkserv and skkserv.is_enabled() then
-    add_all(skkserv.lookup_prefix(prefix))
+    local skkserv_readings = skkserv.lookup_prefix(prefix)
+    for _, reading in ipairs(skkserv_readings) do
+      from_skkserv[reading] = true
+    end
+    add_all(skkserv_readings)
   end
 
   for _, source in ipairs(sources) do
@@ -369,7 +382,7 @@ function M.lookup_prefix(prefix, has_okuri, max_results, skip_skkserv)
     end
     result = truncated
   end
-  return result
+  return result, from_skkserv
 end
 
 return M

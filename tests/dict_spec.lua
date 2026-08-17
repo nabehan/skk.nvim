@@ -8,6 +8,7 @@
 
 local dict = require("skk.dict")
 local parser = require("skk.dict.jisyo_parser")
+local skkserv = require("skk.dict.skkserv")
 
 describe("dict (phase 3: 単一辞書, okuri-nasi のみ)", function()
   before_each(function()
@@ -351,5 +352,81 @@ describe("dict: 前方一致検索 (M.lookup_prefix、blink.cmp ネイティブ�
     assert.are.same({ "うごk", "うつk" }, readings)
     -- 送りなし側の "き" は含まれない
     assert.are.same({}, dict.lookup_prefix("き", true, 10))
+  end)
+end)
+
+-- --- from_skkserv（第2戻り値）のテスト ---
+-- 【注意】tests/fixtures/fake_skkserv.py（Python3が必要）を使った統合
+-- テスト。DICT = {"かんじ": [...], "てすと": [...]} のみを知っている
+-- フェイクサーバーに対して、ローカル辞書だけが知っている読み（かんたん・
+-- かんこう）が from_skkserv に紛れ込まないことを確認する
+-- （lua/skk/blink_source.lua が notfound フォールバックの地雷を踏まない
+-- ために依拠している性質そのもの）。Python3 が無い環境では自動でスキップ
+-- する。
+describe("dict: M.lookup_prefix の第2戻り値 from_skkserv（フェイクサーバー統合テスト）", function()
+  local job_id
+  local PORT = 12790
+
+  local function start_fake_server(port)
+    local script = debug.getinfo(1, "S").source:sub(2):match("(.*/)") .. "fixtures/fake_skkserv.py"
+    if vim.fn.executable("python3") ~= 1 then
+      return nil
+    end
+    local id = vim.fn.jobstart({ "python3", script, tostring(port) })
+    if id <= 0 then
+      return nil
+    end
+    vim.wait(500)
+    return id
+  end
+
+  before_each(function()
+    dict.set_dict(parser.parse(table.concat({
+      "かんじ /漢字/幹事/",
+      "かんたん /簡単/",
+      "かんこう /観光/",
+    }, "\n")))
+    dict.set_user_dict_path(vim.fn.tempname())
+    job_id = start_fake_server(PORT)
+  end)
+
+  after_each(function()
+    if job_id then
+      vim.fn.jobstop(job_id)
+    end
+    skkserv.setup(nil)
+  end)
+
+  it('SKKサーバー自身の"4"応答に含まれる読みだけ from_skkserv=true になる', function()
+    if not job_id then
+      pending("python3 が無いのでスキップ")
+      return
+    end
+    skkserv.setup({ host = "127.0.0.1", port = PORT, encoding = "euc-jp", timeout_ms = 1000 })
+    local readings, from_skkserv = dict.lookup_prefix("かん", false, 10, false)
+    table.sort(readings)
+    assert.are.same({ "かんこう", "かんじ", "かんたん" }, readings)
+    -- フェイクサーバーの DICT には「かんじ」しか無いので、from_skkserv には
+    -- かんじ だけが立ち、ローカル辞書にしかない かんたん/かんこう は
+    -- 立たない。
+    assert.is_true(from_skkserv["かんじ"])
+    assert.is_nil(from_skkserv["かんたん"])
+    assert.is_nil(from_skkserv["かんこう"])
+  end)
+
+  it("skip_skkserv=true なら from_skkserv は空", function()
+    if not job_id then
+      pending("python3 が無いのでスキップ")
+      return
+    end
+    skkserv.setup({ host = "127.0.0.1", port = PORT, encoding = "euc-jp", timeout_ms = 1000 })
+    local _, from_skkserv = dict.lookup_prefix("かん", false, 10, true)
+    assert.are.same({}, from_skkserv)
+  end)
+
+  it("空文字列の prefix は readings・from_skkserv とも空", function()
+    local readings, from_skkserv = dict.lookup_prefix("", false, 10, false)
+    assert.are.same({}, readings)
+    assert.are.same({}, from_skkserv)
   end)
 end)
