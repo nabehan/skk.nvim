@@ -50,8 +50,11 @@ local M = {}
 ---  - skkserv_candidate_limit: SKKサーバーへ実際に"1"を投げる読みの上限件数（デフォルト 20。
 ---    skkserv_candidates=true のときのみ意味を持つ。増やすほどライブ補完メニューの下の方まで
 ---    漢字候補が出る代わりにキー入力ごとの直列往復が増える。SKKサーバー自身の "4" 応答に
----    含まれていた読みにしか"1"を投げない設計のため、上限を大きくしてもnotfoundフォールバック
----    （SKKサーバー側でのGoogle日本語入力への問い合わせ）を誘発する心配はない）
+---    含まれていた読みにしか"1"を投げない設計だが、これだけではnotfoundフォールバックを完全には
+---    防げないことが実機で判明した（下記参照）。追加の防御として、SKKのプログラム候補構文で
+---    使われる文字（"(" ")" '"' "\\"）を含む読みへは、from_skkservに入っていてもSKKサーバーへの
+---    "1"を送らない（詳細はlua/skk/blink_source.luaのlooks_safe_for_skkserv_lookup()、および
+---    README.md「SKKサーバーとの通信の信頼性」参照）
 ---  - debug_timing: get_completions() 1回あたりの所要時間（SKKサーバーへの実際の呼び出し回数
 ---    skkserv_calls も含む）を vim.notify() に出す調査用オプション（デフォルト false）
 ---

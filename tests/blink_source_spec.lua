@@ -238,5 +238,43 @@ describe(
         assert.are.equal("てすと", state.current_reading())
       end
     )
+
+    it(
+      "SKKのプログラム候補構文を含む読みは、from_skkservに入っていてもSKKサーバーへ"
+        .. '"1"を送らない（実機で確認されたnotfoundフォールバック地雷の回避、abbrevモード統合テスト）',
+      function()
+        if not job_id then
+          pending("python3 が無いのでスキップ")
+          return
+        end
+        skkserv.setup({ host = "127.0.0.1", port = PORT, encoding = "euc-jp", timeout_ms = 1000 })
+        -- 上限は十分大きくしておく（絞り込みが効くのを上限のおかげと
+        -- 誤解しないため）。ローカル辞書には "a(concat" は存在しない。
+        source_module.setup({ max_items = 50, skip_skkserv = false, skkserv_candidate_limit = 50 })
+
+        -- abbrev モード（"/" 相当）で "a(concat" と同じ文字列を入力する。
+        state.start_abbrev("hira")
+        for ch in ("a(concat"):gmatch(".") do
+          state.input_abbrev(ch)
+        end
+
+        local src = source_module.new()
+        local response = get_completions_sync(src)
+
+        local item
+        for _, it in ipairs(response.items) do
+          if it.label == "a(concat" then
+            item = it
+          end
+        end
+        assert.is_not_nil(item)
+        -- フェイクサーバーの DICT には "a(concat" の候補
+        -- （"ダミー候補..."）が実在するが、"(" を含む読みへは "1" を
+        -- 送らない設計のため、それが選ばれることは無く「読みのみ」の
+        -- フォールバック項目のままのはず。
+        assert.is_nil(item.data.word)
+        assert.are.equal("a(concat", item.data.reading)
+      end
+    )
   end
 )

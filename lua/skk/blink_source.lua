@@ -64,6 +64,18 @@
 -- 個人辞書・ローカル辞書だけでも候補が見つからなかった読みは、v2 と同じ
 -- 読みのみのフォールバック項目として出す。
 --
+-- 【実機で発見・重要】上記だけでは(2)を完全には防げないことが判明した。
+-- yaskkserv2 の "4"（前方一致）と "1"（完全一致）は内部的に別の索引を
+-- 引いており、SKKのプログラム候補構文（`(concat ...)` 等）がそのまま
+-- 読みとして紛れ込んだ辞書側の変則エントリ（下記「SKKサーバーとの通信の
+-- 信頼性」の5番目の項目と同系統）では、"4" では前方一致するのに "1" では
+-- notfound になるケースが実機で確認された（abbrev モードはASCII文字列を
+-- そのまま前方一致検索するため、このような変則エントリに当たりやすい。
+-- ソート順の都合で先頭付近に来やすく、skkserv_candidate_limit を絞っても
+-- 避けられないことがある）。追加の防御として、読みに `(` `)` `"` `\`
+-- や制御文字が含まれる場合は、from_skkserv に入っていてもSKKサーバーへの
+-- "1" を送らないようにしている（looks_safe_for_skkserv_lookup()）。
+--
 -- require("skk").setup({ blink = { skkserv_candidates = false } }) で
 -- SKKサーバーへの "1" 呼び出しそのものを完全に止められる（個人辞書・
 -- ローカル辞書の候補のみになる。"4" による読み一覧の取得
@@ -165,6 +177,31 @@ end
 
 function source.new()
   return setmetatable({}, source)
+end
+
+--- 【実機で発見・重要】SKKサーバー自身が "4" で存在を表明した読み
+--- （from_skkserv）であっても、その読みに "1" を投げると notfound になり
+--- google-japanese-input フォールバック（yaskkserv2 が Google 翻訳の
+--- transliterate API に問い合わせる。ネットワーク状況次第で数秒〜タイム
+--- アウトまで詰まりうる）を誘発するケースが実機で確認された。実例:
+--- jawiki 辞書に含まれる `t(concat ...)c` のような、SKKのプログラム候補
+--- 構文がそのまま読みとして紛れ込んだ変則エントリ（上記「SKKサーバーとの
+--- 通信の信頼性」の5番目の項目と同一の系統の問題）。abbrev モードは
+--- ASCII文字列をそのまま前方一致検索するため、こうした変則エントリに
+--- 実機でも比較的当たりやすい（`skkserv_candidate_limit` を上げなくても
+--- 発生しうる。ソート順の都合で先頭付近に来やすいため）。
+---
+--- "4" の完成度検索と "1" の完全一致検索とで yaskkserv2 内部の索引が
+--- 食い違いうる（＝from_skkserv だけでは notfound を完全には防げない）
+--- ことが実機で分かったため、追加の防御として、読みに SKK のプログラム
+--- 候補構文で使われる文字（`(` `)` `"` `\`）や制御文字が含まれる場合は、
+--- from_skkserv に入っていてもSKKサーバーへの "1" を送らないようにする
+--- （個人辞書・ローカル辞書のみで完結させ、見つからなければ通常の
+--- 「読みのみ」フォールバック項目になる。機能を失うわけではない）。
+---@param reading string
+---@return boolean
+local function looks_safe_for_skkserv_lookup(reading)
+  return not reading:find('[%(%)"\\%c]')
 end
 
 --- skk.nvim は SkkHenkanChanged autocmd で表示/非表示を通知するため、
@@ -310,7 +347,9 @@ function source:get_completions(_, callback)
   local item_rank = 0
   local skkserv_calls = 0
   for _, full_reading in ipairs(readings) do
-    local use_skkserv = config.skkserv_candidates and from_skkserv[full_reading] == true
+    local use_skkserv = config.skkserv_candidates
+      and from_skkserv[full_reading] == true
+      and looks_safe_for_skkserv_lookup(full_reading)
     if use_skkserv then
       if skkserv_calls >= config.skkserv_candidate_limit then
         use_skkserv = false
