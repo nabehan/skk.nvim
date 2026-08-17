@@ -39,15 +39,24 @@ local M = {}
 ---  文字コード。伝統的な skkserv は EUC-JP が主流）。timeout_ms は1回の検索の待ち時間上限
 ---  （省略時 300）。debug は送受信の生データを vim.notify() で出力するか（省略時 false）。
 ---  個人辞書の次、ローカル辞書より先にマージされる。
----@field blink { max_items: integer, skip_skkserv: boolean, debug_timing: boolean }? blink.cmp ネイティブ
----  ソース（lua/skk/blink_source.lua）の設定。`▽`/`▼` 見出し語入力中の前方一致ライブ補完で、
----  max_items は1回の検索あたり何件までアイテムを出すか（デフォルト 50）。skip_skkserv は
----  ライブ補完で SKKサーバーへの問い合わせを省略するか（デフォルト true。SKKサーバーを含めると
----  キー入力のたびに最大 max_items+1 回の同期TCPラウンドトリップが発生しうるため、既定では
----  個人辞書・ローカル辞書のみで完結させている。false にすると SKKサーバーの候補もライブ補完に
----  含める）。debug_timing は get_completions() 1回あたりの所要時間を vim.notify() に出す
----  調査用オプション（デフォルト false）。ソース自体の登録（blink.cmp の setup() の
----  sources.providers）はユーザーの設定側で行う必要がある（README.md の「blink.cmp 連携」参照）。
+---@field blink { max_items: integer?, skip_skkserv: boolean?, skkserv_candidates: boolean?, skkserv_candidate_limit: integer?, debug_timing: boolean? }?
+---  blink.cmp ネイティブソース（lua/skk/blink_source.lua）の設定。`▽`/`▼` 見出し語入力中の
+---  前方一致ライブ補完（実際の変換候補=漢字まで表示する。Phase 2）で使う。
+---  - max_items: 前方一致で取得する読みの上限件数（デフォルト 50）
+---  - skip_skkserv: 読み一覧の取得（"4"コマンド）にSKKサーバーを含めるか（デフォルト false。
+---    含める。skkeleton と同様）
+---  - skkserv_candidates: 実際の変換候補の取得（"1"コマンド）にSKKサーバーを含めるか
+---    （デフォルト true）。false にすると個人辞書・ローカル辞書の候補のみになる
+---  - skkserv_candidate_limit: SKKサーバーへ実際に"1"を投げる読みの上限件数（デフォルト 20。
+---    skkserv_candidates=true のときのみ意味を持つ。増やすほどライブ補完メニューの下の方まで
+---    漢字候補が出る代わりにキー入力ごとの直列往復が増える。SKKサーバー自身の "4" 応答に
+---    含まれていた読みにしか"1"を投げない設計のため、上限を大きくしてもnotfoundフォールバック
+---    （SKKサーバー側でのGoogle日本語入力への問い合わせ）を誘発する心配はない）
+---  - debug_timing: get_completions() 1回あたりの所要時間（SKKサーバーへの実際の呼び出し回数
+---    skkserv_calls も含む）を vim.notify() に出す調査用オプション（デフォルト false）
+---
+---  ソース自体の登録（blink.cmp の setup() の sources.providers）はユーザーの設定側で行う
+---  必要がある（README.md の「blink.cmp ネイティブソース統合」参照）。
 ---@field dictionaries { path: string, encoding: string?, name: string? }[]? ローカル辞書ファイルの
 ---  一覧。登録順が優先順位になる（先に書いたものが優先される。個人辞書・skkserv の次に
 ---  マージされる）。各エントリの encoding は省略時 "euc-jp"。name は省略時 path
