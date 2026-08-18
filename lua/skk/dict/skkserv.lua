@@ -342,7 +342,12 @@ end
 ---@param command_body string
 ---@param is_terminated (fun(full: string): boolean)|nil
 ---@return string|nil response
-local function send_request_and_wait(command_body, is_terminated)
+---@param command_body string
+---@param is_terminated (fun(full: string): boolean)|nil
+---@param timeout_ms_override integer|nil 省略時は config.timeout_ms（通常のライブ補完等と同じ）。
+---  疎通確認（M.get_version()）など、通常のキー入力パスとは別に長めに
+---  待ちたい呼び出し元のために用意している。
+local function send_request_and_wait(command_body, is_terminated, timeout_ms_override)
   is_terminated = is_terminated or function(full)
     return full:find("\n", 1, true) ~= nil
   end
@@ -426,7 +431,7 @@ local function send_request_and_wait(command_body, is_terminated)
     end)
   end)
 
-  vim.wait(config.timeout_ms, function()
+  vim.wait(timeout_ms_override or config.timeout_ms, function()
     return done
   end, 5)
 
@@ -459,7 +464,7 @@ local function send_request_and_wait(command_body, is_terminated)
     -- 発火しても二重には進まない）。
     finish_once()
     last_status = "timeout"
-    debug_notify("timeout waiting for response (timeout_ms=" .. config.timeout_ms .. ")")
+    debug_notify("timeout waiting for response (timeout_ms=" .. (timeout_ms_override or config.timeout_ms) .. ")")
     return nil
   end
 
@@ -471,7 +476,7 @@ local function send_request_and_wait(command_body, is_terminated)
 
   if not response then
     last_status = "timeout"
-    debug_notify("timeout waiting for response (timeout_ms=" .. config.timeout_ms .. ")")
+    debug_notify("timeout waiting for response (timeout_ms=" .. (timeout_ms_override or config.timeout_ms) .. ")")
     return nil
   end
 
@@ -584,8 +589,9 @@ end
 --- ソケット上でタイミング的に重なると応答が混線する不具合があった。
 --- send_request_and_wait() 経由に統一し、他のコマンドと同じキューを
 --- 共有することで解消している。
+---@param timeout_ms_override integer|nil 省略時は config.timeout_ms。詳細は send_request_and_wait() 参照
 ---@return string|nil version サーバーが応答しなければ nil
-function M.get_version()
+function M.get_version(timeout_ms_override)
   if not config then
     last_status = "not_configured"
     return nil
@@ -594,7 +600,7 @@ function M.get_version()
   -- 【重要】"2" コマンドのレスポンスはスペース終端（改行ではない）。
   local response = send_request_and_wait("2", function(full)
     return full:find(" ", 1, true) ~= nil
-  end)
+  end, timeout_ms_override)
   if not response then
     return nil
   end

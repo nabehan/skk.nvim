@@ -221,9 +221,10 @@ end
 
 --- SKKサーバーのバージョン文字列を取得する（疎通確認用）。
 --- lua/skk/dict/skkserv.lua の M.get_version() を参照。
+---@param timeout_ms_override integer|nil 省略時は通常のlookupと同じtimeout_ms
 ---@return string|nil
-function M.skkserv_version()
-  return skkserv.get_version()
+function M.skkserv_version(timeout_ms_override)
+  return skkserv.get_version(timeout_ms_override)
 end
 
 --- 直近の SKKサーバー通信の結果（診断用）。

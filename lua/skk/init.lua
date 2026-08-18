@@ -54,16 +54,21 @@ local last_skkserv_opts = nil
 ---@field user_dictionary string? 個人辞書（学習結果）ファイルのパス。文字コードは常にUTF-8固定
 ---  （skkeleton の userDictionary の慣習に合わせている）。ファイルが無ければ自動的に作られる。
 ---  デフォルト "~/.local/share/skk/SKK-JISYO.user"（skkeleton と同じ慣習のパス）。
----@field skkserv { host: string, port: integer?, encoding: string?, timeout_ms: integer?, debug: boolean?, check_connection: boolean? }? SKKサーバー
+---@field skkserv { host: string, port: integer?, encoding: string?, timeout_ms: integer?, debug: boolean?, check_connection: boolean?, check_connection_timeout_ms: integer? }? SKKサーバー
 ---  （skkserv/dbskkd-cdb/yaskkserv2 等）への接続設定。省略時は無効（skkserv を使わない）。
 ---  host は必須。port は省略時 1178。encoding は省略時 "euc-jp"（サーバーとの通信に使う
 ---  文字コード。伝統的な skkserv は EUC-JP が主流）。timeout_ms は1回の検索の待ち時間上限
 ---  （省略時 300）。debug は送受信の生データを vim.notify() で出力するか（省略時 false）。
 ---  個人辞書の次、ローカル辞書より先にマージされる。
----  check_connection: true（既定）だと、setup() 完了後（vim.schedule で遅延、setup() 自体は
----  従来通りネットワークI/Oを行わない）に一度だけ疎通確認を行い、接続できなければ
+---  check_connection: true（既定）だと、setup() 完了後（起動直後のイベントループの混雑を
+---  避けるため少し遅らせてから、vim.defer_fn 越しに実行。setup() 自体は従来通り
+---  ネットワークI/Oを行わない）に一度だけ疎通確認を行い、接続できなければ
 ---  vim.notify()（WARN）で host:port・status・エラー詳細を知らせる（正常なら何も表示しない）。
+---  1回失敗しても即座に警告は出さず、少し待ってもう1回だけ試してから最終判断する
+---  （大きな辞書ファイルの読み込み中等、健全な接続でも一過性に間に合わないことがあるため）。
 ---  false にすると疎通確認自体を行わない。手動で再確認したい場合は :SkkCheckSkkserv コマンドも使える。
+---  check_connection_timeout_ms: この疎通確認1回あたりのタイムアウト（省略時 2000。通常の
+---  検索が使う timeout_ms とは別。起動直後は余裕を持たせている）。
 ---@field blink { max_items: integer?, skip_skkserv: boolean?, skkserv_candidates: boolean?, skkserv_candidate_limit: integer?, debug_timing: boolean? }?
 ---  blink.cmp ネイティブソース（lua/skk/blink_source.lua）の設定。`▽`/`▼` 見出し語入力中の
 ---  前方一致ライブ補完（実際の変換候補=漢字まで表示する。Phase 2）で使う。
@@ -115,15 +120,29 @@ local function setup_highlights(opts)
   end
 end
 
+--- 疎通確認のデフォルトタイムアウト（ミリ秒）。通常のライブ補完等が使う
+--- config.timeout_ms（既定300ms）とは別に、こちらは長めに取っている
+--- （【実機で発見】Neovim起動直後・大きな辞書ファイルの読み込み中は
+--- イベントループが混み合っており、実際には健全な接続でも300msでは
+--- 間に合わずタイムアウトしてしまうことがあった。ライブ補完やskkservで
+--- の変換自体は普通に成功するのに、起動直後の疎通確認だけ
+--- "接続できませんでした" と誤って警告してしまう不具合として発現した）。
+local DEFAULT_CHECK_CONNECTION_TIMEOUT_MS = 2000
+--- 上記と同じ理由で、1回目が失敗しても即座に警告を出さず、これだけ
+--- 待ってからもう1回だけ試す（それでも失敗したら本当に繋がっていない
+--- と判断する）。
+local CHECK_CONNECTION_RETRY_DELAY_MS = 300
+
 --- SKKサーバーへの疎通確認を行い、接続できなければ vim.notify()（WARN）で
 --- 知らせる。正常に接続できたときの挙動は silent_on_success で切り替える
 --- （setup() からの自動チェックは既存の nvim-skk-sandbox の
 --- check_skkserv() に合わせて成功時は何も表示しない。:SkkCheckSkkserv
 --- コマンドからの手動実行では、成功したことも分かるようにバージョン
---- 文字列を表示する）。ネットワークI/Oを伴うため、呼び出し側で
---- vim.schedule() 越しに呼ぶこと（setup() 自体はネットワークI/Oを
---- 行わない設計を崩さないため）。last_skkserv_opts が nil
---- （skkserv 未設定）なら何もしない。
+--- 文字列を表示する）。ネットワークI/Oを伴い、失敗時は最大で
+--- タイムアウト2回分+再試行の待ち時間だけ Neovim をブロックしうるため、
+--- 呼び出し側で vim.schedule()/vim.defer_fn() 越しに呼ぶこと（setup()
+--- 自体はネットワークI/Oを行わない設計を崩さないため）。
+--- last_skkserv_opts が nil（skkserv 未設定）なら何もしない。
 ---@param silent_on_success boolean|nil 省略時 true
 local function check_skkserv_connection(silent_on_success)
   if silent_on_success == nil then
@@ -132,7 +151,13 @@ local function check_skkserv_connection(silent_on_success)
   if not last_skkserv_opts then
     return
   end
-  local version = dict.skkserv_version()
+  local timeout_ms = last_skkserv_opts.check_connection_timeout_ms or DEFAULT_CHECK_CONNECTION_TIMEOUT_MS
+  local version = dict.skkserv_version(timeout_ms)
+  if not version then
+    -- 起動直後の一過性の混雑を疑い、少し待ってもう1回だけ試す。
+    vim.wait(CHECK_CONNECTION_RETRY_DELAY_MS)
+    version = dict.skkserv_version(timeout_ms)
+  end
   if version then
     if not silent_on_success then
       vim.notify("skk.nvim: skkserv version: " .. version)
@@ -184,9 +209,15 @@ function M.setup(opts)
       -- pcall で包み、疎通確認自体で予期しないエラーが起きても setup()
       -- 全体には影響させない（nvim-skk-sandbox の check_skkserv() を
       -- 本体に取り込んだもの。元は開発用サンドボックス限定の機能だった）。
-      vim.schedule(function()
+      -- 【実機で発見】即座（vim.schedule、実質次フレーム）に投げると、
+      -- Neovim起動直後・大きな辞書ファイルの読み込み中でイベントループが
+      -- 混み合っている場合があり、健全な接続でも誤ってタイムアウト扱い
+      -- してしまうことがあった。少し起動が落ち着くのを待ってから投げる
+      -- （それでも駄目なら check_skkserv_connection() 内部でさらに1回
+      -- 再試行する。上記コメント参照）。
+      vim.defer_fn(function()
         pcall(check_skkserv_connection)
-      end)
+      end, 300)
     end
   end
 

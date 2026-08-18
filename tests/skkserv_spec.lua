@@ -127,6 +127,52 @@ describe("skkserv.lookup（フェイクサーバーとの統合テスト、Pytho
   end)
 end)
 
+describe("skkserv.get_version(timeout_ms_override)", function()
+  local job_id
+  local PORT = 12781
+
+  before_each(function()
+    job_id = start_fake_server(PORT)
+  end)
+
+  after_each(function()
+    if job_id then
+      vim.fn.jobstop(job_id)
+    end
+    skkserv.setup(nil)
+  end)
+
+  it(
+    "省略時は通常のconfig.timeout_msで動作する（フェイクサーバーからバージョンが取れる）",
+    function()
+      if not job_id then
+        pending("python3 が無いのでスキップ")
+        return
+      end
+      skkserv.setup({ host = "127.0.0.1", port = PORT, encoding = "euc-jp", timeout_ms = 1000 })
+      local version = skkserv.get_version()
+      assert.is_not_nil(version)
+    end
+  )
+
+  it(
+    "timeout_ms_override を指定すると、config.timeout_ms より短く（あるいは長く）諦められる"
+      .. "（skk.nvim起動直後の疎通確認が、通常の検索用timeout_msに引きずられないことの確認）",
+    function()
+      -- config.timeout_ms をわざと長め(5000ms)にしておき、override で短く
+      -- (300ms) 指定した場合にそちらが優先されることを、到達不能ホストへの
+      -- 実測時間で確認する（config.timeout_msに引きずられれば5000ms近く
+      -- かかるはず）。
+      skkserv.setup({ host = "10.255.255.1", port = 1, encoding = "euc-jp", timeout_ms = 5000 })
+      local t0 = vim.loop.now()
+      local version = skkserv.get_version(300)
+      local elapsed = vim.loop.now() - t0
+      assert.is_nil(version)
+      assert.is_true(elapsed < 2000) -- 5000msのconfig.timeout_msに引きずられていない
+    end
+  )
+end)
+
 describe(
   'skkserv.lookup_prefix（"4"コマンド、フェイクサーバーとの統合テスト、Python3が必要）',
   function()
