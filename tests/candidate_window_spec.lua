@@ -172,6 +172,27 @@ describe("candidate_window: 配色オプション（fg/bg/border_fg/border_bg/al
     assert.are.same({ 3 }, alt.alt) -- 4行目("四")
     candidate_window.hide()
   end)
+
+  it(
+    "winhighlight の適用に失敗しても show() 自体はエラーにならない"
+      .. "（実機のNeovimで報告された 'Invalid window id' エラーへの防御を確認）",
+    function()
+      local original = vim.api.nvim_set_option_value
+      vim.api.nvim_set_option_value = function(name, value, opts)
+        if name == "winhighlight" then
+          error("Invalid window id: 999 (simulated)")
+        end
+        return original(name, value, opts)
+      end
+
+      local ok = pcall(candidate_window.show, 0, 0, 0, { { word = "一" } }, 1, 1, 1)
+
+      vim.api.nvim_set_option_value = original
+      candidate_window.hide()
+
+      assert.is_true(ok)
+    end
+  )
 end)
 
 describe("candidate_window の選択中候補ハイライト（selected_offset）", function()

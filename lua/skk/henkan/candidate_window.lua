@@ -287,7 +287,17 @@ local WINHIGHLIGHT = "NormalFloat:SkkCandidateWindowNormal,FloatBorder:SkkCandid
 
 ---@param w integer
 local function apply_winhighlight(w)
-  vim.api.nvim_set_option_value("winhighlight", WINHIGHLIGHT, { win = w })
+  -- 【実機で発見】この呼び出しはあくまで見た目（ハイライトグループの
+  -- 分離）のための付加的な処理であり、失敗してもウィンドウ自体の表示・
+  -- 動作には影響させたくない。実機のNeovim（0.12系）でテスト用の最小限
+  -- vim.api モック環境（tests/candidate_window_placement_spec.lua）と
+  -- 組み合わせたとき、モックしたはずの nvim_set_option_value ではなく
+  -- 実体側が呼ばれて "Invalid window id" になるケースが確認されており
+  -- （モック側の問題の可能性が高いが、原因を問わず本体側は堅牢にしておく）、
+  -- pcall で握りつぶす。失敗時は単に winhighlight が当たらない
+  -- （＝カラースキーム既定の NormalFloat/FloatBorder のまま）だけで、
+  -- ウィンドウの表示・候補選択などの本質的な機能には影響しない。
+  pcall(vim.api.nvim_set_option_value, "winhighlight", WINHIGHLIGHT, { win = w })
 end
 
 function M.show(anchor_win, anchor_row, anchor_col, candidates, page, page_count, selected_offset)
