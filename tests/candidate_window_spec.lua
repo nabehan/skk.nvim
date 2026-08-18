@@ -112,6 +112,68 @@ describe("candidate_window.setup", function()
   end)
 end)
 
+describe("candidate_window: 配色オプション（fg/bg/border_fg/border_bg/alt_fg/alt_bg）", function()
+  after_each(function()
+    -- 他のテストに影響しないよう、ハイライトグループをデフォルトに戻す
+    candidate_window.setup({})
+    candidate_window.hide()
+  end)
+
+  it("無指定（デフォルト）では NormalFloat/FloatBorder にリンクしたまま", function()
+    candidate_window.setup({})
+    local normal = vim.api.nvim_get_hl(0, { name = "SkkCandidateWindowNormal" })
+    local border = vim.api.nvim_get_hl(0, { name = "SkkCandidateWindowBorder" })
+    assert.are.equal("NormalFloat", normal.link)
+    assert.are.equal("FloatBorder", border.link)
+  end)
+
+  it(
+    "fg/bg を指定すると SkkCandidateWindowNormal が直接その色になる（リンクではない）",
+    function()
+      candidate_window.setup({ fg = "#ff0000", bg = "#00ff00" })
+      local normal = vim.api.nvim_get_hl(0, { name = "SkkCandidateWindowNormal" })
+      assert.is_nil(normal.link)
+      assert.are.equal(0xff0000, normal.fg)
+      assert.are.equal(0x00ff00, normal.bg)
+    end
+  )
+
+  it("border_fg/border_bg を指定すると SkkCandidateWindowBorder が直接その色になる", function()
+    candidate_window.setup({ border_fg = "#123456" })
+    local border = vim.api.nvim_get_hl(0, { name = "SkkCandidateWindowBorder" })
+    assert.is_nil(border.link)
+    assert.are.equal(0x123456, border.fg)
+  end)
+
+  it("alt_fg/alt_bg 無指定では SkkCandidateWindowNormal にリンクしたまま（縞なし）", function()
+    candidate_window.setup({})
+    local alt = vim.api.nvim_get_hl(0, { name = "SkkCandidateWindowNormalAlt" })
+    assert.are.equal("SkkCandidateWindowNormal", alt.link)
+  end)
+
+  it("show() は選択行以外の各行に、1行おきの縞模様用 line_hl_group を付ける", function()
+    candidate_window.setup({})
+    candidate_window.show(0, 0, 0, {
+      { word = "一" },
+      { word = "二" },
+      { word = "三" },
+      { word = "四" },
+    }, 1, 1, 2) -- 2番目（"二"、0-indexedで行1）を選択中とする
+
+    assert.are.equal(1, candidate_window._highlighted_line()) -- "二" が選択中
+
+    local alt = candidate_window._alt_highlighted_lines()
+    -- 選択中の行（1）には縞模様グループは付かない（SkkHenkanCandidateが優先）。
+    -- 残り（0, 2, 3）が1行おきに Normal/NormalAlt に振り分けられる
+    -- （1-indexedの奇数行=Normal、偶数行=Alt。build_content()参照）。
+    table.sort(alt.normal)
+    table.sort(alt.alt)
+    assert.are.same({ 0, 2 }, alt.normal) -- 1行目("一")・3行目("三")
+    assert.are.same({ 3 }, alt.alt) -- 4行目("四")
+    candidate_window.hide()
+  end)
+end)
+
 describe("candidate_window の選択中候補ハイライト（selected_offset）", function()
   before_each(function()
     candidate_window.hide()

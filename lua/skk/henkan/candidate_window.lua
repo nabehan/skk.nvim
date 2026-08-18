@@ -53,9 +53,35 @@ local sticky_row_offset = nil
 ---@type { border: string|string[], annotation: boolean, page_indicator: boolean }
 local config = { border = "rounded", annotation = true, page_indicator = true }
 
+--- 候補ウィンドウ用のハイライトグループのデフォルトを定義する。
+--- fg/bg/border_fg/border_bg/alt_fg/alt_bg のいずれかが指定されていれば、
+--- そのグループはリンクではなく直接その色で定義する。指定が無いグループは
+--- 標準のフロートウィンドウ用グループ（NormalFloat/FloatBorder）に
+--- リンクしたままにする（＝カラースキーム任せ、現状と同じ見た目）。
+--- SkkCandidateWindowNormalAlt（1行おきの縞模様用）は、alt_fg/alt_bg が
+--- 無指定なら SkkCandidateWindowNormal 自体にリンクする（＝縞なし）。
+---@param opts { fg: string?, bg: string?, border_fg: string?, border_bg: string?, alt_fg: string?, alt_bg: string? }
+local function setup_highlights(opts)
+  if opts.fg or opts.bg then
+    vim.api.nvim_set_hl(0, "SkkCandidateWindowNormal", { fg = opts.fg, bg = opts.bg })
+  else
+    vim.api.nvim_set_hl(0, "SkkCandidateWindowNormal", { default = true, link = "NormalFloat" })
+  end
+  if opts.border_fg or opts.border_bg then
+    vim.api.nvim_set_hl(0, "SkkCandidateWindowBorder", { fg = opts.border_fg, bg = opts.border_bg })
+  else
+    vim.api.nvim_set_hl(0, "SkkCandidateWindowBorder", { default = true, link = "FloatBorder" })
+  end
+  if opts.alt_fg or opts.alt_bg then
+    vim.api.nvim_set_hl(0, "SkkCandidateWindowNormalAlt", { fg = opts.alt_fg, bg = opts.alt_bg })
+  else
+    vim.api.nvim_set_hl(0, "SkkCandidateWindowNormalAlt", { default = true, link = "SkkCandidateWindowNormal" })
+  end
+end
+
 --- 見た目のオプションを設定する。lua/skk/init.lua から setup() 時に呼ばれる。
 --- 未指定のキーはデフォルト値のまま維持する。
----@param opts { border: string|string[], annotation: boolean, page_indicator: boolean }|nil
+---@param opts { border: string|string[], annotation: boolean, page_indicator: boolean, fg: string?, bg: string?, border_fg: string?, border_bg: string?, alt_fg: string?, alt_bg: string? }|nil
 function M.setup(opts)
   opts = opts or {}
   if opts.border ~= nil then
@@ -67,6 +93,7 @@ function M.setup(opts)
   if opts.page_indicator ~= nil then
     config.page_indicator = opts.page_indicator
   end
+  setup_highlights(opts)
 end
 
 -- ===================================================================
@@ -205,6 +232,18 @@ local function build_content(candidates, page, page_count, selected_offset)
   vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
 
   vim.api.nvim_buf_clear_namespace(b, get_ns(), 0, -1)
+  for i = 1, #candidates do
+    if not (selected_offset and i == selected_offset) then
+      -- 選択行以外は、1行おきに SkkCandidateWindowNormal /
+      -- SkkCandidateWindowNormalAlt を交互に当てる（縞模様。
+      -- alt_fg/alt_bg 未指定時は同じ色にリンクしているため見た目は
+      -- 変わらない。設定した場合だけ可読性向上の縞が現れる）。
+      local hl_group = (i % 2 == 1) and "SkkCandidateWindowNormal" or "SkkCandidateWindowNormalAlt"
+      vim.api.nvim_buf_set_extmark(b, get_ns(), i - 1, 0, {
+        line_hl_group = hl_group,
+      })
+    end
+  end
   if selected_offset and selected_offset >= 1 and selected_offset <= #candidates then
     vim.api.nvim_buf_set_extmark(b, get_ns(), selected_offset - 1, 0, {
       line_hl_group = "SkkHenkanCandidate",
@@ -239,6 +278,18 @@ end
 ---@param page_count integer 全ページ数
 ---@param selected_offset integer|nil 現在選択中の候補の、ページ内での位置（1〜7）。
 ---  nil ならハイライトしない。
+--- 候補一覧ウィンドウの NormalFloat/FloatBorder を、skk.nvim 専用の
+--- ハイライトグループ（SkkCandidateWindowNormal/SkkCandidateWindowBorder）
+--- に差し替える。これらは Neovim 全体で共有されるグループ（LSPのhover等
+--- 他のフロートウィンドウにも影響する）なので、'winhighlight' で
+--- このウィンドウだけ専用グループに切り替える。
+local WINHIGHLIGHT = "NormalFloat:SkkCandidateWindowNormal,FloatBorder:SkkCandidateWindowBorder"
+
+---@param w integer
+local function apply_winhighlight(w)
+  vim.api.nvim_set_option_value("winhighlight", WINHIGHLIGHT, { win = w })
+end
+
 function M.show(anchor_win, anchor_row, anchor_col, candidates, page, page_count, selected_offset)
   if #candidates == 0 then
     M.hide()
@@ -281,6 +332,7 @@ function M.show(anchor_win, anchor_row, anchor_col, candidates, page, page_count
     win_config.noautocmd = true
     win = vim.api.nvim_open_win(b, false, win_config)
   end
+  apply_winhighlight(win)
 end
 
 --- 【コマンドラインモード専用】候補一覧をコマンドライン行のすぐ上に
@@ -331,6 +383,7 @@ function M.show_cmdline(candidates, page, page_count, selected_offset)
     win_config.noautocmd = true
     win = vim.api.nvim_open_win(b, false, win_config)
   end
+  apply_winhighlight(win)
 
   vim.cmd("redraw")
 end
@@ -364,15 +417,43 @@ end
 --- 現在ハイライトされている行番号（0-indexed）を返す（テスト用）。
 --- ハイライトが無ければ nil。
 ---@return integer|nil
+--- テスト用: 現在「選択中の行」としてハイライトされている行番号（0-indexed）を
+--- 返す。build_content() は選択行以外にも縞模様用の extmark を打つため、
+--- 単純に「最初の extmark」ではなく、hl_group が SkkHenkanCandidate
+--- （選択行専用のグループ。上記 build_content() 参照）のものを探す。
 function M._highlighted_line()
   if not buf or not vim.api.nvim_buf_is_valid(buf) or not ns then
     return nil
   end
-  local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, {})
-  if #marks == 0 then
-    return nil
+  local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+  for _, mark in ipairs(marks) do
+    local details = mark[4]
+    if details and details.line_hl_group == "SkkHenkanCandidate" then
+      return mark[2] -- {id, row, col, details}
+    end
   end
-  return marks[1][2] -- {id, row, col}
+  return nil
+end
+
+--- テスト用: 現在、縞模様用のハイライト（SkkCandidateWindowNormal /
+--- SkkCandidateWindowNormalAlt）が付いている行番号（0-indexed）を、
+--- グループ名ごとに配列で返す。build_content() のロジック検証用。
+---@return { normal: integer[], alt: integer[] }
+function M._alt_highlighted_lines()
+  local out = { normal = {}, alt = {} }
+  if not buf or not vim.api.nvim_buf_is_valid(buf) or not ns then
+    return out
+  end
+  local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+  for _, mark in ipairs(marks) do
+    local details = mark[4]
+    if details and details.line_hl_group == "SkkCandidateWindowNormal" then
+      table.insert(out.normal, mark[2])
+    elseif details and details.line_hl_group == "SkkCandidateWindowNormalAlt" then
+      table.insert(out.alt, mark[2])
+    end
+  end
+  return out
 end
 
 return M

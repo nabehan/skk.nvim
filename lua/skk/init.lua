@@ -13,6 +13,11 @@ local dict = require("skk.dict")
 
 local M = {}
 
+--- setup({ skkserv = {...} }) で渡された設定を覚えておく（:SkkCheckSkkserv
+--- コマンドから再利用するため）。skkserv 未設定なら nil のまま。
+---@type { host: string, port: integer? }|nil
+local last_skkserv_opts = nil
+
 ---@class SkkSetupOpts
 ---@field enter_key string? 半角英数/全角英数 -> ひらがな。henkan 中は確定。デフォルト "<C-j>"
 ---@field sticky_shift_enabled boolean? Sticky-shift（大文字キーを使わずに ▽開始・送り開始点を
@@ -21,7 +26,7 @@ local M = {}
 ---  sticky_shift_enabled=false のときは無視される。
 ---@field egg_like_newline boolean? true: ▼状態での <CR> は確定のみ行い、改行は挿入しない
 ---  （skk.nvimのデフォルト）。false: 確定に加えて改行も挿入する（SKK本来の動作）。デフォルト true。
----@field candidate_window { border: string|string[], annotation: boolean, page_indicator: boolean, threshold: integer }? 候補一覧ウィンドウの見た目・表示タイミング。
+---@field candidate_window { border: string|string[], annotation: boolean, page_indicator: boolean, threshold: integer, fg: string?, bg: string?, border_fg: string?, border_bg: string?, alt_fg: string?, alt_bg: string? }? 候補一覧ウィンドウの見た目・表示タイミング。
 ---  border は nvim_open_win() の "border" と同じ形式（"rounded"/"single"/"double"/
 ---  "none"/自前の文字配列 等）。デフォルト "rounded"。
 ---  annotation: 辞書の注釈（";注釈"）を候補一覧に表示するか。デフォルト true。
@@ -30,15 +35,35 @@ local M = {}
 ---  それまでは inline の ▼候補 表示で1件ずつ候補を送るだけでウィンドウは出さない
 ---  （個人辞書の学習で先頭候補が当たりやすくなったことを踏まえた設定。1にすると
 ---  従来通り最初の <SPC> でウィンドウも同時に表示する）。デフォルト 2。
+---  fg/bg: 非選択の候補行の文字色・背景色（ハイライトグループ SkkCandidateWindowNormal）。
+---  省略時はカラースキームの NormalFloat のまま（＝現状と同じ）。
+---  border_fg/border_bg: 枠線の色（ハイライトグループ SkkCandidateWindowBorder）。
+---  省略時はカラースキームの FloatBorder のまま（＝現状と同じ）。
+---  alt_fg/alt_bg: 非選択の候補行を1行おきに変える色（可読性向上のための縞模様。
+---  ハイライトグループ SkkCandidateWindowNormalAlt）。省略時は fg/bg と同じ（＝縞なし、現状と同じ）。
+---  選択中の行の色は候補window固有ではなく、下記 candidate_fg/candidate_bg（SkkHenkanCandidate、
+---  ▼インライン表示と共通）で指定する。
+---@field midashi_fg string? ▽（見出し語入力中）のインライン表示の文字色（ハイライトグループ
+---  SkkHenkanMidashi。abbrev モードの表示にも使われる）。省略時はカラースキームの Comment
+---  のまま（＝現状と同じ）。
+---@field midashi_bg string? 同上の背景色。省略時は現状と同じ。
+---@field candidate_fg string? ▼（変換候補）のインライン表示の文字色（ハイライトグループ
+---  SkkHenkanCandidate）。候補一覧ウィンドウの選択中の行のハイライトにも同じグループが
+---  使われるため、両方に効く。省略時はカラースキームの IncSearch のまま（＝現状と同じ）。
+---@field candidate_bg string? 同上の背景色。省略時は現状と同じ。
 ---@field user_dictionary string? 個人辞書（学習結果）ファイルのパス。文字コードは常にUTF-8固定
 ---  （skkeleton の userDictionary の慣習に合わせている）。ファイルが無ければ自動的に作られる。
 ---  デフォルト "~/.local/share/skk/SKK-JISYO.user"（skkeleton と同じ慣習のパス）。
----@field skkserv { host: string, port: integer?, encoding: string?, timeout_ms: integer?, debug: boolean? }? SKKサーバー
+---@field skkserv { host: string, port: integer?, encoding: string?, timeout_ms: integer?, debug: boolean?, check_connection: boolean? }? SKKサーバー
 ---  （skkserv/dbskkd-cdb/yaskkserv2 等）への接続設定。省略時は無効（skkserv を使わない）。
 ---  host は必須。port は省略時 1178。encoding は省略時 "euc-jp"（サーバーとの通信に使う
 ---  文字コード。伝統的な skkserv は EUC-JP が主流）。timeout_ms は1回の検索の待ち時間上限
 ---  （省略時 300）。debug は送受信の生データを vim.notify() で出力するか（省略時 false）。
 ---  個人辞書の次、ローカル辞書より先にマージされる。
+---  check_connection: true（既定）だと、setup() 完了後（vim.schedule で遅延、setup() 自体は
+---  従来通りネットワークI/Oを行わない）に一度だけ疎通確認を行い、接続できなければ
+---  vim.notify()（WARN）で host:port・status・エラー詳細を知らせる（正常なら何も表示しない）。
+---  false にすると疎通確認自体を行わない。手動で再確認したい場合は :SkkCheckSkkserv コマンドも使える。
 ---@field blink { max_items: integer?, skip_skkserv: boolean?, skkserv_candidates: boolean?, skkserv_candidate_limit: integer?, debug_timing: boolean? }?
 ---  blink.cmp ネイティブソース（lua/skk/blink_source.lua）の設定。`▽`/`▼` 見出し語入力中の
 ---  前方一致ライブ補完（実際の変換候補=漢字まで表示する。Phase 2）で使う。
@@ -71,10 +96,61 @@ local M = {}
 ---  進捗を表示したい場合に使う（省略可）。
 
 --- ▽/▼ 表示用のハイライトグループのデフォルトを定義する。
---- 既にユーザーやカラースキームが定義済みなら上書きしない (default = true)。
-local function setup_highlights()
-  vim.api.nvim_set_hl(0, "SkkHenkanMidashi", { default = true, link = "Comment" })
-  vim.api.nvim_set_hl(0, "SkkHenkanCandidate", { default = true, link = "IncSearch" })
+--- opts.midashi_fg/midashi_bg/candidate_fg/candidate_bg のいずれかが
+--- 指定されていれば、そのグループはリンクではなく直接その色で定義する
+--- （明示的に指定した色を優先する）。指定が無いグループは、これまで通り
+--- 既にユーザーやカラースキームが定義済みなら上書きしない (default = true)
+--- リンクのままにする。
+---@param opts { midashi_fg: string?, midashi_bg: string?, candidate_fg: string?, candidate_bg: string? }
+local function setup_highlights(opts)
+  if opts.midashi_fg or opts.midashi_bg then
+    vim.api.nvim_set_hl(0, "SkkHenkanMidashi", { fg = opts.midashi_fg, bg = opts.midashi_bg })
+  else
+    vim.api.nvim_set_hl(0, "SkkHenkanMidashi", { default = true, link = "Comment" })
+  end
+  if opts.candidate_fg or opts.candidate_bg then
+    vim.api.nvim_set_hl(0, "SkkHenkanCandidate", { fg = opts.candidate_fg, bg = opts.candidate_bg })
+  else
+    vim.api.nvim_set_hl(0, "SkkHenkanCandidate", { default = true, link = "IncSearch" })
+  end
+end
+
+--- SKKサーバーへの疎通確認を行い、接続できなければ vim.notify()（WARN）で
+--- 知らせる。正常に接続できたときの挙動は silent_on_success で切り替える
+--- （setup() からの自動チェックは既存の nvim-skk-sandbox の
+--- check_skkserv() に合わせて成功時は何も表示しない。:SkkCheckSkkserv
+--- コマンドからの手動実行では、成功したことも分かるようにバージョン
+--- 文字列を表示する）。ネットワークI/Oを伴うため、呼び出し側で
+--- vim.schedule() 越しに呼ぶこと（setup() 自体はネットワークI/Oを
+--- 行わない設計を崩さないため）。last_skkserv_opts が nil
+--- （skkserv 未設定）なら何もしない。
+---@param silent_on_success boolean|nil 省略時 true
+local function check_skkserv_connection(silent_on_success)
+  if silent_on_success == nil then
+    silent_on_success = true
+  end
+  if not last_skkserv_opts then
+    return
+  end
+  local version = dict.skkserv_version()
+  if version then
+    if not silent_on_success then
+      vim.notify("skk.nvim: skkserv version: " .. version)
+    end
+    return
+  end
+  local detail = dict.skkserv_last_connect_error()
+  vim.notify(
+    string.format(
+      "skk.nvim: skkserv に接続できませんでした (%s:%s)。status=%s%s。"
+        .. "ホスト/ポート、サーバーの起動状態を確認してください。",
+      last_skkserv_opts.host,
+      tostring(last_skkserv_opts.port or 1178),
+      dict.skkserv_status(),
+      detail and (" error=" .. tostring(detail)) or ""
+    ),
+    vim.log.levels.WARN
+  )
 end
 
 ---@param opts SkkSetupOpts|nil
@@ -83,7 +159,7 @@ function M.setup(opts)
   local enter_key = opts.enter_key or "<C-j>"
   local user_dictionary = opts.user_dictionary or vim.fn.expand("~/.local/share/skk/SKK-JISYO.user")
 
-  setup_highlights()
+  setup_highlights(opts)
   capture.setup({
     sticky_shift_enabled = opts.sticky_shift_enabled,
     sticky_shift_key = opts.sticky_shift_key,
@@ -96,6 +172,22 @@ function M.setup(opts)
   dict.set_user_dict_path(user_dictionary)
   if opts.skkserv then
     dict.set_skkserv(opts.skkserv)
+    last_skkserv_opts = opts.skkserv
+    local check_connection = opts.skkserv.check_connection
+    if check_connection == nil then
+      check_connection = true
+    end
+    if check_connection then
+      -- setup() 自体はネットワークI/Oを行わない設計（dict/skkserv.lua の
+      -- M.setup() のコメント参照）を崩さないよう、実際の疎通確認は
+      -- vim.schedule() で1フレーム遅らせる（Neovim起動をブロックしない）。
+      -- pcall で包み、疎通確認自体で予期しないエラーが起きても setup()
+      -- 全体には影響させない（nvim-skk-sandbox の check_skkserv() を
+      -- 本体に取り込んだもの。元は開発用サンドボックス限定の機能だった）。
+      vim.schedule(function()
+        pcall(check_skkserv_connection)
+      end)
+    end
   end
 
   -- ローカル辞書ファイルの読み込み。登録順（呼んだ順）が優先順位になる
@@ -142,6 +234,14 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("SkkMode", function()
     notify_mode()
   end, {})
+
+  vim.api.nvim_create_user_command("SkkCheckSkkserv", function()
+    if not last_skkserv_opts then
+      vim.notify("skk.nvim: skkserv は設定されていません（setup({ skkserv = {...} }) 参照）")
+      return
+    end
+    check_skkserv_connection(false)
+  end, { desc = "skk.nvim: SKKサーバーへの疎通確認を手動で実行する" })
 end
 
 return M
