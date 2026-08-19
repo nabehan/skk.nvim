@@ -9,6 +9,7 @@
 local capture = require("skk.capture")
 local henkan_state = require("skk.henkan.state")
 local candidate_window = require("skk.henkan.candidate_window")
+local candidate_nav = require("skk.candidate_nav")
 local dict = require("skk.dict")
 
 local M = {}
@@ -43,6 +44,21 @@ local last_skkserv_opts = nil
 ---  ハイライトグループ SkkCandidateWindowNormalAlt）。省略時は fg/bg と同じ（＝縞なし、現状と同じ）。
 ---  選択中の行の色は候補window固有ではなく、下記 candidate_fg/candidate_bg（SkkHenkanCandidate、
 ---  ▼インライン表示と共通）で指定する。
+---@field candidate_navigation { enabled: boolean?, next_key: string?, prev_key: string? }? 候補一覧
+---  ウィンドウ表示中の <C-n>/<C-p> によるフォーカス移動。
+---  【なぜ必要か】この移動は元々 vim.on_key() だけで処理していたが、blink.cmp 等の補完
+---  プラグインが挿入モードに <C-n>/<C-p> の実キーマップ（nvim_buf_set_keymap /
+---  nvim_set_keymap）を張っている環境では、そちらが vim.on_key() より先にキーを
+---  消費してしまい、henkan の ▼(select) フェーズ中でもフォーカスが動かない不具合が
+---  実機で確認された。そのため enter_key（<C-j> 等）と同様、ここだけ実際の
+---  vim.keymap.set() を使う。
+---  setup() を呼んだ時点で next_key/prev_key に既に張られているマッピング（他プラグイン
+---  のもの）を読み取って保存しておき、▼(select) フェーズ以外のときはそのまま委譲する
+---  （blink.cmp の補完メニュー選択などを壊さない）。そのため、blink.cmp 等の setup() は
+---  require("skk").setup() より前に呼んでおく必要がある。
+---  enabled: false にするとこのキーマップ自体を張らない（従来通り vim.on_key() のみに
+---  委ねる）。デフォルト true。
+---  next_key/prev_key: デフォルト "<C-n>"/"<C-p>"。
 ---@field midashi_fg string? ▽（見出し語入力中）のインライン表示の文字色（ハイライトグループ
 ---  SkkHenkanMidashi。abbrev モードの表示にも使われる）。省略時はカラースキームの Comment
 ---  のまま（＝現状と同じ）。
@@ -247,6 +263,58 @@ function M.setup(opts)
 
   local function notify_mode()
     vim.notify("skk.nvim: " .. capture.mode_label())
+  end
+
+  -- 【実機で発見】候補一覧ウィンドウ表示中に <C-n>/<C-p> でフォーカスが動かない
+  -- 不具合の原因は、blink.cmp 等が挿入モードに <C-n>/<C-p> の実キーマップを
+  -- 張っており、vim.on_key() より先にキーを消費してしまうこと。
+  -- 判定ロジック本体は lua/skk/candidate_nav.lua（vim.* 非依存、単体テスト対象）
+  -- に切り出してあり、ここでは setup() 時点で既存マッピングを1回だけ捕捉し、
+  -- 実際の副作用（feedkeys 等）だけを行う。
+  ---@param key string
+  ---@param candidate_action fun()
+  local function setup_candidate_nav_key(key, candidate_action)
+    -- vim.fn.maparg(..., dict=true) は無ければ空 table を返す（エラーにはならない）。
+    local existing = vim.fn.maparg(key, "i", false, true)
+
+    vim.keymap.set("i", key, function()
+      local result = candidate_nav.resolve(henkan_state.get_phase(), existing)
+
+      if result.kind == "candidate" then
+        candidate_action()
+      elseif result.kind == "callback" then
+        result.callback()
+      elseif result.kind == "expr_callback" then
+        local ok, expr_result = pcall(result.callback)
+        if ok and type(expr_result) == "string" and expr_result ~= "" then
+          local keys = result.replace_keycodes and vim.api.nvim_replace_termcodes(expr_result, true, false, true)
+            or expr_result
+          vim.api.nvim_feedkeys(keys, result.noremap and "n" or "m", false)
+        end
+      elseif result.kind == "rhs" then
+        local keys = vim.api.nvim_replace_termcodes(result.rhs, true, false, true)
+        vim.api.nvim_feedkeys(keys, result.noremap and "n" or "m", false)
+      elseif result.kind == "expr_rhs" then
+        local ok, expr_result = pcall(vim.fn.eval, result.rhs)
+        if ok and type(expr_result) == "string" and expr_result ~= "" then
+          local keys = vim.api.nvim_replace_termcodes(expr_result, true, false, true)
+          vim.api.nvim_feedkeys(keys, result.noremap and "n" or "m", false)
+        end
+      else -- "passthrough"
+        local raw = vim.api.nvim_replace_termcodes(key, true, false, true)
+        vim.api.nvim_feedkeys(raw, "n", false)
+      end
+    end, { desc = "skk.nvim: henkan候補選択(" .. key .. ") / 非選択中は元のマッピングへ委譲" })
+  end
+
+  local candidate_nav_opts = opts.candidate_navigation or {}
+  local candidate_nav_enabled = candidate_nav_opts.enabled
+  if candidate_nav_enabled == nil then
+    candidate_nav_enabled = true
+  end
+  if candidate_nav_enabled then
+    setup_candidate_nav_key(candidate_nav_opts.next_key or "<C-n>", henkan_state.focus_next)
+    setup_candidate_nav_key(candidate_nav_opts.prev_key or "<C-p>", henkan_state.focus_prev)
   end
 
   vim.keymap.set({ "i", "c" }, enter_key, function()
