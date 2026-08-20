@@ -24,6 +24,14 @@ command -- this is the actual real-world protocol, not a guess:
 import socket
 import sys
 import threading
+import time
+
+# 【テスト用】"2"（バージョン確認）コマンドへの応答を意図的に遅延させる
+# ためのオプション（第2引数、ミリ秒。省略時0=遅延なし）。skkserv.lua の
+# 直列キュー（enqueue()）が、あるジョブの応答待ちが長引いている間に別の
+# リクエストが割り込んだ場合の挙動をテストするために使う
+# （tests/skkserv_spec.lua 参照）。
+VERSION_DELAY_MS = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
 DICT = {
     "かんじ": ["漢字", "幹事;manager", "監事"],
@@ -77,6 +85,8 @@ def handle(conn):
                 conn.sendall(resp)
             elif buf[:1] == b"2":
                 buf = buf[1:]
+                if VERSION_DELAY_MS > 0:
+                    time.sleep(VERSION_DELAY_MS / 1000.0)
                 conn.sendall(b"fake-skkserv-1.0 ")  # スペース終端、改行なし
             elif buf[:1] == b"3":
                 buf = buf[1:]

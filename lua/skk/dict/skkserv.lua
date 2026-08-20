@@ -78,7 +78,10 @@ local connecting = false
 --- エラーのいずれか）してから次のジョブが実行される。これにより、
 --- 衝突そのものは従来通り起きず、かつリクエストが失われることもない。
 --- "1"/"4"/"2" のいずれの経路も、必ずこのキューを経由する。
----@type (fun(finish: fun()))[]
+---@class SkkServQueueEntry
+---@field fn fun(finish: fun())
+
+---@type SkkServQueueEntry[]
 local queue = {}
 local queue_running = false
 
@@ -88,12 +91,12 @@ local function run_next_in_queue()
   if queue_running then
     return
   end
-  local job = table.remove(queue, 1)
-  if not job then
+  local entry = table.remove(queue, 1)
+  if not entry then
     return
   end
   queue_running = true
-  job(function()
+  entry.fn(function()
     queue_running = false
     run_next_in_queue()
   end)
@@ -101,10 +104,30 @@ end
 
 --- ジョブをキューの末尾に積む。キューが空でジョブが1つも実行中でなければ
 --- 即座に実行される。job は完了時に必ず（一度だけ）finish() を呼ぶこと。
+---
+--- 【重要・実機で発見】戻り値の cancel() は、このジョブがまだ実行開始
+--- 前（＝キューに並んでいるだけでソケットには一切触れていない）なら
+--- キューから取り除く。単語登録UI（vim.fn.input() の再帰）のように
+--- イベントループが長く回る状況で、順番待ちの間に呼び出し元
+--- （send_request_and_wait()）が自身のタイムアウトで諦めた場合に、
+--- そのジョブを「実行開始前のまま」キューに残さないために使う。
+--- 一度実行が始まった（entry.fn が呼ばれた）後は、そのジョブ自身が
+--- 自分の finish() を呼ぶ責任を持つため、cancel() は何もしない
+--- （queue 配列には既に存在しないので、そのまま何もしなくてよい）。
 ---@param job fun(finish: fun())
+---@return fun() cancel
 local function enqueue(job)
-  table.insert(queue, job)
+  local entry = { fn = job }
+  table.insert(queue, entry)
   run_next_in_queue()
+  return function()
+    for i, e in ipairs(queue) do
+      if e == entry then
+        table.remove(queue, i)
+        return
+      end
+    end
+  end
 end
 
 --- 直近の接続失敗時刻（uv.now() のミリ秒）。しばらく再試行しない
@@ -372,7 +395,7 @@ local function send_request_and_wait(command_body, is_terminated, timeout_ms_ove
     end
   end
 
-  enqueue(function(finish)
+  local cancel_enqueued = enqueue(function(finish)
     finish_fn = finish
 
     ensure_connected(function(ok)
@@ -436,33 +459,54 @@ local function send_request_and_wait(command_body, is_terminated, timeout_ms_ove
   end, 5)
 
   if not done then
-    -- 【重要】タイムアウトしても、それだけでは終わらせない。
-    -- client:read_stop() だけでは不十分（libuv/Lua側のコールバック配送を
-    -- 止めるだけで、OS のソケット受信バッファに溜まった「遅れて届いた
-    -- 応答」のバイト列そのものは消えない）。そのまま次のリクエストが
-    -- 同じ接続で read_start() すると、その残っていたバイト列を「次の
-    -- リクエストへの応答」として誤って受け取ってしまう（実機で発見・
-    -- 確認：1つ前のリクエストへの "4...\n"（該当なし応答）が、数リクエスト
-    -- 後の応答として誤配送され、そこから連鎖的にズレていった）。
-    -- 確実に切り分けるには接続そのものを閉じて capture し直すしかないため、
-    -- ここで client を閉じて nil にし、次回の ensure_connected() で
-    -- 新しい接続を張らせる（ローカルホストなら再接続のコストは軽微）。
-    if client then
-      pcall(function()
-        client:read_stop()
-      end)
-      pcall(function()
-        client:close()
-      end)
-      client = nil
+    if finish_fn then
+      -- このジョブは既に実行開始していた（＝ソケットに触れていた）。
+      -- 【重要】タイムアウトしても、それだけでは終わらせない。
+      -- client:read_stop() だけでは不十分（libuv/Lua側のコールバック配送を
+      -- 止めるだけで、OS のソケット受信バッファに溜まった「遅れて届いた
+      -- 応答」のバイト列そのものは消えない）。そのまま次のリクエストが
+      -- 同じ接続で read_start() すると、その残っていたバイト列を「次の
+      -- リクエストへの応答」として誤って受け取ってしまう（実機で発見・
+      -- 確認：1つ前のリクエストへの "4...\n"（該当なし応答）が、数リクエスト
+      -- 後の応答として誤配送され、そこから連鎖的にズレていった）。
+      -- 確実に切り分けるには接続そのものを閉じて capture し直すしかないため、
+      -- ここで client を閉じて nil にし、次回の ensure_connected() で
+      -- 新しい接続を張らせる（ローカルホストなら再接続のコストは軽微）。
+      if client then
+        pcall(function()
+          client:read_stop()
+        end)
+        pcall(function()
+          client:close()
+        end)
+        client = nil
+      end
+      -- 【重要】キューの先頭を占有したままだと、以降の全リクエストが
+      -- 永久に詰まる。まだジョブ側の非同期コールバックが finish_once()
+      -- を呼んでいない可能性があるので、ここで明示的に進める
+      -- （finished フラグにより、後から本来のコールバックが遅れて
+      -- 発火しても二重には進まない）。
+      finish_once()
+    else
+      -- 【重要・実機で発見】このジョブはまだ実行開始前（キューで順番待ち
+      -- の途中）でタイムアウトした。この場合 finish_once() は
+      -- finish_fn が nil のため何もせず、かつ client は今まさに別の
+      -- （このジョブとは無関係な）ジョブが使っている可能性があるため、
+      -- ここで client を閉じてはいけない（閉じると、無関係な実行中の
+      -- ジョブの読み取りストリームを壊してしまう）。
+      --
+      -- 代わりに、まだキューに並んでいるだけのこのジョブ自体を
+      -- cancel_enqueued() で queue 配列から取り除く。これをしないと、
+      -- 「一度もソケットに触れないままキューに残り続けるゾンビジョブ」
+      -- になり、ずっと後になって無関係な別リクエストの完了をきっかけに
+      -- 実行され、そのぶん後続の全リクエストが無駄に待たされる
+      -- （単語登録UI＝vim.fn.input()の再帰でイベントループが長く回る
+      -- 状況で複数蓄積し、以降のライブ補完が「極めて遅い」原因になって
+      -- いた不具合。nvim再起動でしか直らなかったのは、queueがモジュール
+      -- ローカル変数でプロセス内に残り続けるため）。
+      cancel_enqueued()
     end
     done = true
-    -- 【重要】キューの先頭を占有したままだと、以降の全リクエストが
-    -- 永久に詰まる。まだジョブ側の非同期コールバックが finish_once()
-    -- を呼んでいない可能性があるので、ここで明示的に進める
-    -- （finished フラグにより、後から本来のコールバックが遅れて
-    -- 発火しても二重には進まない）。
-    finish_once()
     last_status = "timeout"
     debug_notify("timeout waiting for response (timeout_ms=" .. (timeout_ms_override or config.timeout_ms) .. ")")
     return nil
@@ -578,6 +622,15 @@ function M._parse_prefix_response(response)
     readings[#readings + 1] = part
   end
   return readings
+end
+
+--- 【テスト専用】直列キュー（queue）に現在残っているジョブの数を返す。
+--- 「まだ実行開始前のままキューに取り残されたジョブ（ゾンビジョブ）」が
+--- 無いことを確認する再発防止テスト（tests/skkserv_spec.lua）のための
+--- 白箱テスト用アクセサ。通常のコードから使う想定は無い。
+---@return integer
+function M._queue_length()
+  return #queue
 end
 
 --- サーバーのバージョン文字列を取得する（"2" コマンド）。エンコーディングに
