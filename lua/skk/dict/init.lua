@@ -248,6 +248,13 @@ function M.set_user_dict_path(file_path)
   user_dict.load(file_path)
 end
 
+--- 個人辞書の保留中のデバウンス保存（user_dict.lua 参照）があれば、
+--- 即座に（同期的に）書き出す。通常は Neovim終了時（VimLeavePre）に
+--- user_dict.lua 側で自動的に行われるため、明示的に呼ぶ必要は無い。
+function M.flush_user_dict()
+  user_dict.flush()
+end
+
 --- word が重複する候補を除きながら、from の候補を into へ追加する。
 ---@param into SkkDictCandidate[]
 ---@param seen table<string, boolean>

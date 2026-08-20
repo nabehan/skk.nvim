@@ -24,21 +24,99 @@ local data = { okuri_ari = {}, okuri_nasi = {} }
 ---@type string|nil
 local path = nil
 
+--- 【重要・実機で発見】以前は record_selection() のたびに毎回 M.save() を
+--- 同期的に呼んでおり、変換候補を確定するたび（＝SKK利用でもっとも頻繁な
+--- 操作）に個人辞書全体を jisyo_parser.serialize() で直列化してファイルへ
+--- 同期書き込みしていた。個人辞書が育つほど serialize() のコストも増える
+--- ため、長文入力セッションほど確定のたびのブロッキングが伸びていく
+--- （長文の打ち込みテストで「だんだん重くなる」体感の一因になっていた。
+--- skkserv側の直列キューのゾンビジョブ不具合とは独立した、別の原因）。
+---
+--- 【対策】保存を「最後の record_selection() から SAVE_DEBOUNCE_MS だけ
+--- 次の record_selection() が来なければ、まとめて1回だけ書く」方式
+--- （デバウンス）に変更する。連続して確定が続く間はディスクに触れず、
+--- 少し間が空いたタイミングで初めて実際に書き込む。
+---
+--- 保留中の書き込みを失わないよう、次の2つのタイミングで強制的に
+--- 同期フラッシュする:
+---   (1) VimLeavePre（Neovim終了時に、確定直後の学習が失われないように）
+---   (2) M.load()（辞書ファイルの切り替え・再読み込み時。手元のテスト
+---       （record_selection 直後に load() し直して保存内容を確認する類の
+---       もの）も、この (2) のおかげで従来通りの挙動のまま動く）
+local SAVE_DEBOUNCE_MS = 500
+---@type table|nil vim.defer_fn() の戻り値（:stop()/:close() を持つ）
+local pending_save_timer = nil
+local flush_autocmd_registered = false
+
+--- 保留中の保存があれば、タイマーを止めて即座に（同期的に）書き出す。
+--- 保留中の保存が無ければ何もしない。
+local function flush_pending_save()
+  if not pending_save_timer then
+    return
+  end
+  pcall(function()
+    pending_save_timer:stop()
+  end)
+  pcall(function()
+    pending_save_timer:close()
+  end)
+  pending_save_timer = nil
+  M.save()
+end
+
+--- Neovim終了時に保留中の保存を取りこぼさないための autocmd を登録する
+--- （一度だけ。M.load() のたびに複数登録しないよう guard する）。
+local function ensure_flush_on_exit()
+  if flush_autocmd_registered then
+    return
+  end
+  flush_autocmd_registered = true
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    callback = flush_pending_save,
+  })
+end
+
+--- record_selection() から呼ぶ。SAVE_DEBOUNCE_MS だけ他の呼び出しが
+--- 無ければ実際に M.save() を実行する「まとめ書き」のスケジューラ。
+--- 既に予約済みのタイマーがあれば、それを止めて予約し直す
+--- （＝連続した確定のたびに毎回ディスクへ書きに行くことはしない）。
+local function schedule_save()
+  if pending_save_timer then
+    pcall(function()
+      pending_save_timer:stop()
+    end)
+    pcall(function()
+      pending_save_timer:close()
+    end)
+    pending_save_timer = nil
+  end
+  pending_save_timer = vim.defer_fn(function()
+    pending_save_timer = nil
+    M.save()
+  end, SAVE_DEBOUNCE_MS)
+end
+
 --- 個人辞書ファイルを読み込む（UTF-8前提）。以降の record_selection() は
 --- このパスに自動保存する。
 --- ファイルがまだ存在しない場合はエラーにせず、空の状態で始める
 --- （個人辞書は「まだ何も学習していない」のが正常な初期状態のため）。
 ---@param file_path string
 function M.load(file_path)
+  -- 【重要】切り替え・再読み込みの前に、直前のパスに対する保留中の
+  -- デバウンス保存があれば必ず先に書き出す（上のコメント参照）。
+  flush_pending_save()
+
   path = file_path
   local f = io.open(file_path, "rb")
   if not f then
     data = { okuri_ari = {}, okuri_nasi = {} }
+    ensure_flush_on_exit()
     return
   end
   local text = f:read("*a")
   f:close()
   data = jisyo_parser.parse(text or "")
+  ensure_flush_on_exit()
 end
 
 --- 現在設定されている個人辞書のパス（M.load() 未実行なら nil）。
@@ -106,7 +184,18 @@ function M.record_selection(reading, has_okuri, word, annotation)
   table.insert(filtered, 1, { word = word, annotation = annotation })
   section[reading] = filtered
 
-  M.save()
+  -- 【重要】以前はここで毎回 M.save() を同期的に呼んでいた（ファイル冒頭の
+  -- コメント参照）。確定のたびに個人辞書全体をディスクへ書きに行くのは
+  -- 長文入力ほど重くなるため、デバウンスしたまとめ書きに変更している。
+  schedule_save()
+end
+
+--- 保留中のデバウンス保存があれば、即座に（同期的に）書き出す。無ければ
+--- 何もしない。通常はテストや、明示的に「今すぐ確実に書き出したい」
+--- 場面でのみ使う想定（Neovim終了時の取りこぼし防止は VimLeavePre で
+--- 自動的に行われるため、通常の利用でこれを直接呼ぶ必要は無い）。
+function M.flush()
+  flush_pending_save()
 end
 
 --- 現在の個人辞書の内容をファイルに書き出す。M.load() でパスが

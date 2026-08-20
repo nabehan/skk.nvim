@@ -102,3 +102,94 @@ describe("user_dict", function()
     assert.are.same({}, user_dict.lookup_prefix("", false, 10))
   end)
 end)
+
+-- 【再発防止・実機で発見】record_selection() は skk.nvim でもっとも
+-- 頻繁に呼ばれる関数の一つ（確定するたびに毎回呼ばれる）だが、以前は
+-- そのたびに毎回 M.save()（個人辞書全体を直列化してファイルへ同期書き込み）
+-- を呼んでおり、個人辞書が育つほど・長文入力ほど確定のたびのブロッキングが
+-- 伸びていく不具合があった。以下は「連続した確定の間はディスクに書かず、
+-- 少し間が空いてからまとめて1回だけ書く」デバウンス化の確認。
+--
+-- 【注意】M.load() を呼ぶと保留中の保存を自動フラッシュする設計になって
+-- いるため（既存テストがそのまま動くようにするための設計）、この
+-- describe 内のテストでは load()/lookup() 経由ではなく io.open() で
+-- ファイルの生の内容を直接読み、意図せずフラッシュしてしまわないように
+-- する。
+describe("user_dict の保存デバウンス（実機で発見・再発防止）", function()
+  local tmp_path
+
+  local function read_raw_file()
+    local f = io.open(tmp_path, "rb")
+    if not f then
+      return nil
+    end
+    local text = f:read("*a")
+    f:close()
+    return text
+  end
+
+  before_each(function()
+    tmp_path = vim.fn.tempname()
+    user_dict.load(tmp_path)
+  end)
+
+  after_each(function()
+    user_dict.flush() -- 次のテストに保留中の保存タイマーを持ち越さない
+    os.remove(tmp_path)
+  end)
+
+  it("record_selection() 直後はまだディスクに書き込まれていない（デバウンス中）", function()
+    user_dict.record_selection("かんじ", false, "漢字", nil)
+    -- ファイルはまだ存在しない（初回の save() がまだ走っていない）はず。
+    assert.is_nil(read_raw_file())
+  end)
+
+  it("flush() を呼べば保留中の保存が即座にディスクへ反映される", function()
+    user_dict.record_selection("かんじ", false, "漢字", nil)
+    assert.is_nil(read_raw_file())
+
+    user_dict.flush()
+
+    local text = read_raw_file()
+    assert.is_not_nil(text)
+    assert.is_not_nil(text:find("かんじ", 1, true))
+    assert.is_not_nil(text:find("漢字", 1, true))
+  end)
+
+  it(
+    "連続した record_selection() は1回分の最終状態にまとめられる（毎回ディスクに書かない）",
+    function()
+      user_dict.record_selection("かんじ", false, "漢字", nil)
+      user_dict.record_selection("かんじ", false, "幹事", nil)
+      user_dict.record_selection("かんじ", false, "監事", nil)
+      assert.is_nil(read_raw_file()) -- この時点では1回も書き込まれていない
+
+      user_dict.flush()
+
+      local text = read_raw_file()
+      assert.is_not_nil(text)
+      -- 直近の record_selection（"監事"）が先頭に来た、最終状態1回分だけが
+      -- 書き込まれているはず。
+      local kanji_idx = text:find("監事", 1, true)
+      assert.is_not_nil(kanji_idx)
+    end
+  )
+
+  it(
+    "デバウンス時間が経過すれば、flush() を呼ばなくても自動的にディスクへ書き込まれる",
+    function()
+      user_dict.record_selection("かんじ", false, "漢字", nil)
+      assert.is_nil(read_raw_file())
+
+      -- SAVE_DEBOUNCE_MS（500ms）より十分長く待つ。vim.wait() はイベント
+      -- ループを回すので、予約された vim.defer_fn() のコールバックも進む。
+      vim.wait(1000, function()
+        return read_raw_file() ~= nil
+      end, 20)
+
+      local text = read_raw_file()
+      assert.is_not_nil(text)
+      assert.is_not_nil(text:find("かんじ", 1, true))
+    end
+  )
+end)
