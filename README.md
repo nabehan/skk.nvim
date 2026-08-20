@@ -4,6 +4,305 @@ Neovim 専用（Vim 非対応）、denops/外部プロセスに依存しない�
 
 **現在ステータス:** ローマ字→かな/カタカナ変換・4モード切替（切替時はカーソル位置にモードインジケーターを表示）に加えて、辞書変換（`▽`/`▼`、送りあり/送りなし/abbrev）・候補選択ウィンドウ（`<C-n>`/`<C-p>`フォーカス移動対応）・単語登録（`vim.fn.input()`の再帰呼び出しによる、再帰的な単語登録に対応したUI）・Sticky-shift・個人辞書（学習）・複数辞書のマージ・SKKサーバー連携に対応。大きな辞書ファイルは非同期・遅延パースで読み込む。挿入モードのバッファに加え、**コマンドラインモード**（`:`/`/`）でもローマ字→かな変換・4モード切替・モードインジケーター・辞書変換（`▽`/`▼`、候補選択ウィンドウ）・単語登録まで一通り対応済み。内蔵ターミナルは対応しない方針（後述）。
 
+## インストール
+
+[lazy.nvim](https://github.com/folke/lazy.nvim) の最小構成例（辞書なしでもロード・モード切替までは試せる。辞書変換には別途辞書ファイルの読み込みが必要、後述の「使い方」参照）:
+
+```lua
+{
+  "nabehan/skk.nvim",
+  config = function()
+    require("skk").setup({
+      -- お好みで。省略時のデフォルトについては後述の「使い方」参照。
+    })
+
+    -- 辞書変換（▽/▼）を使うには、setup() とは別に辞書ファイルを読み込む必要がある。
+    -- SKK-JISYO.L 等は https://github.com/skk-dev/dict から入手できる。
+    require("skk.dict").load_dictionary_async(
+      "/usr/share/skk/SKK-JISYO.L",
+      "euc-jp"
+    )
+  end,
+}
+```
+
+[blink.cmp](https://github.com/Saghen/blink.cmp) や SKKサーバー（skkserv/yaskkserv2 等）と組み合わせる場合の設定例は、後述の「使い方」および「blink.cmp ネイティブソース統合」を参照。実際に動く最小構成は [nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox) の `init.lua` も参考になる。
+
+要件: Neovim 0.10 以上（`vim.on_key()` の空文字列 return によるキー消費、`vim.schedule`、extmark 等を使用）。denops や他の外部プロセスへの依存は無い。
+
+## モード (`mode.lua` + `kana_util.lua`)
+
+本家 SKK は5モード（半角英数/ひらがな/カタカナ/全角英数/半角カナ）だが、半角カナは実装しない方針としたため、このプラグインでは4モードを実装している。
+
+| モード              | 内容                                                                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------------- |
+| `ascii`（半角英数） | SKK が事実上 OFF の状態。キー入力は完全パススルー                                                    |
+| `hira`（ひらがな）  | 通常のローマ字入力                                                                                   |
+| `kata`（カタカナ）  | ローマ字入力の結果をカタカナで表示                                                                   |
+| `zenei`（全角英数） | 印字可能な半角ASCII文字をすべて全角に変換する（`q` を打っても `ｑ`。モード切替キーとしては扱わない） |
+
+**モード遷移表（`lua/skk/mode.lua`）:**
+
+```
+半角英数 --<C-j>--> ひらがな
+全角英数 --<C-j>--> ひらがな
+ひらがな --l-->     半角英数
+ひらがな --q-->     カタカナ
+ひらがな --L-->     全角英数
+カタカナ --l-->     半角英数
+カタカナ --q-->     ひらがな
+カタカナ --L-->     全角英数
+```
+
+`l`/`q`/`L` は印字可能な文字なので `capture.lua` の `vim.on_key()` コールバック内で、**未確定のローマ字バッファが空のときに限り**モード切替キーとして特別扱いする（バッファが空でなければ通常のローマ字入力として処理する）。`<C-j>` は制御キーなので `init.lua` が通常の `vim.keymap.set` 経由で `capture.transition()` を呼ぶ。
+
+**半角カナモードについて:** 当初は本家 SKK にならって実装する計画だったが、実際に試したところ**半角カナを挿入するとターミナルエミュレーターの動作が不安定になる事例が確認された**ため、実装しない方針に変更した。`<C-q>` キーはモード切替としては使わないが、abbrev モード中に限り「全角変換して確定」の意味で使う（後述の「変換（`▽`/`▼`、henkan）」参照）。
+
+**カタカナへの変換方式:** `kana_table.lua` をカタカナ版として複製するのではなく、`kana_util.lua` の変換関数を「ひらがな確定後の後処理」として適用する方式にしている。
+
+- ひらがな→カタカナ: ひらがな (`U+3041`–`U+3096`) とカタカナ (`U+30A1`–`U+30F6`) は小書き文字を含め例外なく `+0x60` のオフセットで対応しているため、コードポイント演算1つで変換できる。
+- 半角英数→全角英数: 半角ASCII (`0x21`–`0x7E`) は `+0xFEE0` で全角形 (`U+FF01`–`U+FF5E`) に対応する。半角スペース (`0x20`) だけ全角スペース (`U+3000`) への特別扱いが必要（`+0xFEE0` すると未割り当ての `U+FF00` になってしまうため）。
+
+この方式なら `kana_table.lua` は1つのまま維持でき、表の二重管理・ズレのリスクがない（実際、今回小文字かな `xa`/`xya` 等を追加した際もカタカナ側は自動的に追随した）。
+
+**なぜ自前で UTF-8 デコード/エンコードを書いているか:** Lua 5.3+ の標準 `utf8` ライブラリは LuaJIT（Neovim の既定の Lua 実装）には含まれていない。この開発環境（`lua5.4`）で動くコードでも、実際の Neovim (LuaJIT) では `utf8.codes` 等が存在せず壊れる可能性があるため、`kana_util.lua` はバイト列から直接コードポイントを読み書きする最小限のデコーダ/エンコーダを自前で実装している。
+
+## 使い方
+
+```lua
+require("skk").setup({
+  enter_key = "<C-j>", -- 半角英数/全角英数 -> ひらがな。henkan 中は <CR> 相当（確定）。省略時 "<C-j>"
+
+  sticky_shift_enabled = true, -- Sticky-shift の有効/無効。省略時 true
+  sticky_shift_key = ";",      -- Sticky-shift のトリガーキー。省略時 ";"（sticky_shift_enabled=false なら無視される）
+
+  egg_like_newline = true, -- true: ▼状態での<CR>は確定のみ（改行しない、skk.nvimのデフォルト）
+                            -- false: 確定に加えて改行も挿入する（SKK本来の動作）
+
+  candidate_window = {
+    border = "rounded",   -- "rounded"/"single"/"double"/"none"/自前の文字配列。省略時 "rounded"
+    annotation = true,    -- 候補一覧に辞書の注釈（;注釈）を表示するか。省略時 true
+    page_indicator = true, -- 最下行に "現在ページ/全ページ数"（例: "2/3"）を表示するか。省略時 true
+    threshold = 2, -- <SPC>を何回打鍵した時点で候補一覧ウィンドウを表示するか。省略時 2
+
+    -- 配色（すべて省略時はカラースキームの NormalFloat/FloatBorder のまま、現状と同じ見た目）
+    -- fg = "#d8dee9", bg = "#2e3440",   -- 非選択の候補行
+    -- border_fg = "#88c0d0",            -- 枠線
+    -- alt_fg = "#d8dee9", alt_bg = "#1b4252", -- 1行おきの縞模様（省略時は縞なし）
+  },
+
+  -- ▽/▼のインライン表示の配色（省略時はComment/IncSearchのまま、現状と同じ）。
+  -- candidate_fg/bgは候補ウィンドウの選択行のハイライトにも連動する。
+  -- midashi_fg = "#81a1c1", midashi_bg = nil,
+  -- candidate_fg = "#ebcb8b", candidate_bg = "#4c566a",
+
+  -- 候補一覧ウィンドウ表示中の <C-n>/<C-p> によるフォーカス移動。blink.cmp 等が
+  -- 挿入モードに <C-n>/<C-p> の実キーマップを張っている環境向けの対策（詳細は
+  -- 後述の「blink.cmp ネイティブソース統合」参照）。setup() を呼ぶ前に、
+  -- blink.cmp 等の setup() を済ませておく必要がある。デフォルト有効。
+  -- candidate_navigation = { enabled = true, next_key = "<C-n>", prev_key = "<C-p>" },
+
+  user_dictionary = "~/.local/share/skk/SKK-JISYO.user", -- 個人辞書（学習）ファイルのパス。省略時この値
+})
+```
+
+各オプションの詳細（デフォルト値・組み合わせ時の注意点）は `lua/skk/init.lua` の `SkkSetupOpts` の docstring、または `:help skk.nvim-options` を参照。
+
+初期モードは `半角英数`（SKK 実質 OFF）。挿入モードで `<C-j>` を押すとひらがなモードに入る。以降は前述のモード遷移表（`l`/`q`/`L`）でモードを切り替えながら入力する。`:SkkMode` コマンドで現在のモードを確認できる。
+
+辞書を使う（`▽`/`▼` 変換）には、`setup()` とは別に辞書を読み込んで登録する必要がある。SKK-JISYO.L や .LL のような大きな辞書ファイルは `load_dictionary_async()`（非同期・遅延パース）を推奨する:
+
+```lua
+local dict = require("skk.dict")
+
+dict.load_dictionary_async("/path/to/SKK-JISYO.L", "euc-jp", function(ok, err)
+  if not ok then
+    vim.notify("skk.nvim: 辞書の読み込みに失敗しました: " .. tostring(err), vim.log.levels.WARN)
+  end
+end)
+```
+
+小さい辞書や同期読み込みで十分な場合は `file_source.load()` + `dict.set_dict()` でも良い:
+
+```lua
+local dict = require("skk.dict")
+local file_source = require("skk.dict.file_source")
+
+local parsed, err = file_source.load("/path/to/SKK-JISYO.L", "euc-jp") -- 文字コードは辞書ファイルに合わせる
+if parsed then
+  dict.set_dict(parsed)
+end
+```
+
+複数の辞書ファイルや SKKサーバーを併用する場合（`skkeleton` の `globalDictionaries`/`skk_server` に相当する構成）:
+
+```lua
+require("skk").setup({
+  skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" },
+  -- ...他のオプション
+})
+
+local dict = require("skk.dict")
+dict.load_dictionary_async("/usr/share/skk/SKK-JISYO.L", "euc-jp") -- メイン辞書
+dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.edict2", "utf-8")
+dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.emoji", "utf-8")
+```
+
+同じ構成は `setup()` の `dictionaries` オプションだけでも書ける（`dict.add_dictionary_async()` を登録順に呼ぶのを `setup()` が代行するだけなので、優先順位や非同期・遅延パースといった挙動は上の書き方と全く同じ）。`setup()` 呼び出しが一箇所にまとまるので、`config = function() ... end` 内を短く保ちたい場合に使うとよい:
+
+```lua
+require("skk").setup({
+  skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" },
+  dictionaries = {
+    { path = "/usr/share/skk/SKK-JISYO.L", encoding = "euc-jp" }, -- メイン辞書
+    { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
+    { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
+  },
+  on_dictionary_loaded = function(path, ok, err) -- 省略可。読み込み完了のたびに呼ばれる
+    if not ok then
+      vim.notify("skk.nvim: " .. path .. " の読み込みに失敗: " .. tostring(err), vim.log.levels.WARN)
+    end
+  end,
+  -- ...他のオプション
+})
+```
+
+`dictionaries` は常に `add_dictionary_async()`（非同期・遅延パース、複数辞書の追加登録）を使う。1件目からメイン辞書として `load_dictionary_async()` を使いたい場合（＝2件目以降を追加した時点で1件目を丸ごと置き換えたい場合）は、引き続き上の `dict.load_dictionary_async()` を直接呼ぶ書き方を使う。
+
+`skk_test_init.lua` は環境変数 `SKK_SKKSERV_HOST`/`SKK_JISYO_PATHS`（`:` 区切り）/`SKK_JISYO_PATHS_ENCODING` で、この構成をそのまま試せるようにしてある（ファイル冒頭のコメント参照）。
+
+blink.cmp と組み合わせる場合は、`require("skk").setup({ blink = {...} })` で `blink_source.lua` 側の設定（`max_items`・`skip_skkserv`・`skkserv_candidates`・`skkserv_candidate_limit`、詳細は後述の「blink.cmp ネイティブソース統合」参照）を渡した上で、blink.cmp 自体の `sources.providers` にソースとして登録する（登録自体はこのプラグインの外、ユーザー設定側の責務）。`▽`/`▼` に合わせたメニューの表示切替は `SkkHenkanChanged` autocmd を使う（詳細は後述の「blink.cmp ネイティブソース統合」参照）:
+
+```lua
+require("skk").setup({
+  blink = {
+    max_items = 50,               -- 前方一致で取得する読みの上限件数。省略時50
+    skip_skkserv = false,         -- "4"（読み一覧取得）にSKKサーバーを含めるか。省略時false
+    skkserv_candidates = true,    -- "1"（実際の変換候補取得）にSKKサーバーを含めるか。省略時true
+    skkserv_candidate_limit = 20, -- SKKサーバーへ"1"を投げる読みの上限件数。省略時20
+  },
+  -- ...他のオプション
+})
+
+require("blink-cmp").setup({
+  sources = {
+    default = { "skk", "lsp", "path", "snippets", "buffer" },
+    providers = {
+      skk = {
+        name = "skk",
+        module = "skk.blink_source",
+        enabled = function()
+          -- "midashi"（▽、通常のかな漢字変換）だけでなく "abbrev"
+          -- （▽、"/" で始める英字そのままの見出し）でも有効にする。
+          -- 詳細は下記「さらに注意4」参照。
+          local phase = require("skk.henkan.state").get_phase()
+          return phase == "midashi" or phase == "abbrev"
+        end,
+      },
+    },
+  },
+})
+
+-- ▽/▼ の表示に合わせて blink.cmp のメニューを show()/hide() する。
+-- ▼（候補選択）中は skk.nvim 自身の候補選択ウィンドウが出るため hide() し、
+-- blink.cmp のメニューと競合しないようにする。
+--
+-- 【重要】show() には必ず providers = { "skk" } を明示すること。
+-- blink.cmp の show() は「メニューが既に開いていて providers を
+-- 指定しない場合は何もしない」というガードを持つ。skk.nvim の ▽/▼ は
+-- extmark（仮想テキスト）表示で実バッファは変化しないため、blink.cmp
+-- 自身の「実テキストの変更を検知して自動的に再要求する」通常の仕組みは
+-- 働かない。providers を省略すると、▽に入った直後（読みが空文字）の
+-- 1回目でメニューが開いた後、読みが伸びても2回目以降の show() が
+-- 無視され、候補リストが更新されないまま止まってしまう。
+vim.api.nvim_create_autocmd("User", {
+  pattern = "SkkHenkanChanged",
+  callback = function(ev)
+    local phase = ev.data and ev.data.phase
+    if phase == "midashi" or phase == "abbrev" then
+      vim.schedule(function()
+        require("blink.cmp").show({ providers = { "skk" } })
+      end)
+    else
+      require("blink.cmp").hide()
+    end
+  end,
+})
+```
+
+## 既知の制限
+
+- 複数辞書のマージ・SKKサーバー連携は実装済み（`dict.add_dict()`/`dict.add_dictionary_async()`/`require("skk").setup({ skkserv = {...} })`）。実機の yaskkserv2 での動作確認済み。他の skkserv 実装（`dbskkd-cdb` 等）は未検証。
+- 単語登録は実装済み（`vim.fn.input()` の再帰呼び出しによるUI、後述の「単語登録UI」参照）。バッファ・コマンドラインどちらの変換からでも動作し、実機確認済み。
+- 通常のバッファ（挿入モード）・コマンドラインモード（`c`、`/`・`?`・`:` いずれも含む）ともに、ローマ字→かな変換・4モード切替・モードインジケーター・辞書変換（`▽`/`▼`、候補選択ウィンドウ）に対応済み（`target.lua`、実機確認済み）。実際の検索・置換（`:%s`）とも問題なく共存する。
+- **内蔵ターミナル（`t`）には対応しない方針**とした。理由は以下の2点：
+  - （技術的コスト）内蔵ターミナルはNeovimの通常のバッファではなくPTYであり、`nvim_buf_set_text()`のような直接書き込みができず、確定した文字列を`chansend()`でPTYにバイト列として送る形になる。未確定のローマ字断片の literal display や `▽`/`▼` のpreedit表示、それを`<BS>`等で書き換える操作を、PTYへのバイト列送出という一方向的な手段だけで安全に実現するのは実装難易度が大きく上がる。実際、[skkeleton](https://github.com/vim-skk/skkeleton)を内蔵ターミナルで試した際、`<C-j>`で有効化はできるものの確定したはずの文字がターミナルに残らない不具合が実機で確認されている。
+  - （費用対効果）内蔵ターミナル上で日本語などの長文を入力する機会はもともと少なく、また内蔵ターミナルではシェル補完は効くが`blink.cmp`のような補完エンジンは機能しないため、このプラグインが元々解決しようとした課題（`blink.cmp`との相性、後述の「なぜ作るか」参照）にとって内蔵ターミナル対応の価値は薄いと判断した。
+- `<Left>`/`<Right>` などのカーソル移動キーやマウスクリックは、henkan 非アクティブ時の未確定ローマ字バッファについては安全に扱える（`is_target_key` に該当しないキーが来た時点でバッファを無条件にリセットするため、確定済みかなを破壊するようなバイト列破損は起こらない）が、**表示上の不整合**（未確定ローマ字がそのまま残る）は起こりうる。henkan（▽/▼）アクティブ中にこれらのキーが来た場合の挙動は未検証。
+- blink.cmp のネイティブソースとしての統合は、Phase 2（実際の変換候補=漢字まで表示する設計、後述の「blink.cmp ネイティブソース統合」参照）まで実装・実機確認済み。サンドボックス環境（[nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox)）で通常バッファ・コマンドラインモード双方の動作確認が完了しており、`show()` 再トリガーの不具合・外部UIとのキー競合（`passthrough_guard`）も修正済み。実機の日常設定 [nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) への実際の配線はまだ行っていない。設計上、送りありの前方一致補完は非対応、候補を選ぶ前のライブなゴーストテキストプレビューも出せない。
+- `egg_like_newline = false`（SKK本来の、確定+改行の動作）は実装・動作確認済みだが、`vim.api.nvim_feedkeys()` で `<CR>` を再注入する方式のため、`<CR>` に他プラグインのマッピングが被っている環境では想定外の相互作用が起こる可能性がある。
+- 候補選択ウィンドウの表示位置自動切替（上下）は `vim.fn.screenpos()` の実測に依存するため、`nvim --headless`（UI未接続）環境ではテストできない（実機での動作確認のみ）。
+- モードラインへのモード表示（現状はカーソル位置への一時的なインジケーターのみ）は未実装。
+
+## 開発時の動作確認
+
+普段の Neovim 設定を汚さずに、このリポジトリ単体で動作確認できる最小 init（`skk_test_init.lua`）を同梱している。
+
+```bash
+nvim -u ./skk_test_init.lua
+```
+
+起動後、挿入モードで `<C-j>` → `ka`・`kka`・`kyou`・`xtu` などを打って変換されるか確認する。モード切替も試す: `q`（ひらがな⇔カタカナ）、`l`（→半角英数）、`L`（→全角英数）。`:SkkMode` で現在のモードを確認できる。
+
+`skk_debug_float.lua` は、コマンドラインモード編集中にフローティングウィンドウが実際に画面へ反映されるかどうかを切り分けるための使い捨てデバッグスクリプト（`nvim -u skk_test_init.lua -c "source skk_debug_float.lua"` で読み込む）。skk.nvim 本体の一部ではないが、コマンドライン向けUI（候補選択ウィンドウ等）の実装・デバッグ時に再び使う可能性があるため当面リポジトリに残してある。
+
+## テスト
+
+[plenary.nvim](https://github.com/nvim-lua/plenary.nvim) の busted 互換ランナーで `tests/*_spec.lua` を実行する。`make test` で plenary.nvim を `.tests/site/pack/deps/start/` に自動取得してから実行するので、個人の Neovim 環境に plenary.nvim が入っているかどうかに関わらず動く。
+
+```bash
+make test
+```
+
+手動で実行したい場合、または既に別の場所に plenary.nvim がある場合は `PLENARY_DIR` 環境変数で指定できる。
+
+```bash
+PLENARY_DIR=~/.local/share/nvim/lazy/plenary.nvim \
+  nvim --headless --noplugin -u tests/minimal_init.lua \
+  -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
+```
+
+## ロードマップ
+
+1. ~~ローマ字 → かな変換エンジン~~ ✅
+2. ~~`vim.on_key()` によるキー横取り~~ ✅
+3. ~~4モード（半角英数/ひらがな/カタカナ/全角英数）の相互切替~~ ✅
+4. ~~`▽`/`▼` の pre-edit 表示を extmark ベースに置き換える~~ ✅
+5. ~~辞書検索（送りなし・送りあり・abbrev）~~ ✅
+6. ~~候補選択ウィンドウ（複数候補の一覧表示・ページング）~~ ✅
+7. ~~Sticky-shift~~ ✅
+8. ~~個人辞書・学習（recency-based の並び替え）~~ ✅
+9. ~~複数辞書のマージ・skkserv 連携~~ ✅
+10. ~~単語登録（候補が見つからない読みをその場で辞書に追加する）~~ ✅（`vim.fn.input()` の再帰呼び出しによるUI。再帰的な単語登録も可能。実機確認済み、後述の「単語登録UI」参照）
+11. ~~blink.cmp ネイティブソースとしての統合~~ ✅（読みのみのライブ補完=v2、実際の変換候補=漢字を出す設計=Phase 2 とも、サンドボックス環境 [nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox) で実機動作確認済み。実機の日常設定への配線が次のステップ、詳細は後述の「blink.cmp ネイティブソース統合」、前述の「既知の制限」参照）
+12. ~~周辺 UI（モードインジケーター）~~ ✅（カーソル位置への一時表示のみ。モードライン表示は未着手）
+13. ~~コマンドラインモードへの対応~~ ✅（`target.lua`。ローマ字→かな変換・4モード切替・モードインジケーター・辞書変換（`▽`/`▼`、候補選択ウィンドウ）まで実機確認済み。内蔵ターミナルは非対応と決定、前述の「既知の制限」参照）
+14. `vim.uv.new_work()` によるスレッドプール並列パース（大きな辞書の起動負荷をさらに削減）
+
+## 参考にしたプロジェクト
+
+- [vim-skk/skkeleton](https://github.com/vim-skk/skkeleton) — 単語登録UI（`vim.fn.input()` の再帰呼び出し、`<Esc>`/`<C-g>` をセンチネル文字列で判定する手法）は `registerWord()`（`denops/skkeleton/function/dictionary.ts`）を実装前に読んで参考にした
+- [uga-rosa/skk-learning.nvim](https://github.com/uga-rosa/skk-learning.nvim) — Lua での SKK 実装入門
+- [yuys13/skk-develop.nvim](https://github.com/yuys13/skk-develop.nvim) — SKK辞書ダウンローダー
+- [wachikun/yaskkserv2](https://github.com/wachikun/yaskkserv2) — skkserv 連携の実機動作確認に使用したSKKサーバー
+- [Saghen/blink.cmp](https://github.com/Saghen/blink.cmp) — ネイティブソースのAPI（`get_completions`/`execute`/`resolve`、`default_implementation` を自分で呼ぶ必要がある点等）を `blink_source.lua` 実装前に読んで参考にした
+- [nabehan/nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) — 実機で skkeleton + blink.cmp を運用している設定一式。`skkeleton_source.lua`（textEdit の range 計算、`default_implementation` 呼び出し忘れの教訓）や `blink.lua`（`▽`/`▼` に合わせた show()/hide()、`▼` 中の抑止、キーマップ設定）を `blink_source.lua` 設計時に参考にした。実機が既定の `<C-y>` ではなく `<CR>` を accept に割り当てていた事実は `passthrough_guard` の設計（キー決め打ちではなく `is_visible()` 判定にする）を見直す決め手になった
+- [nabehan/nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox) — 実機の日常設定とは切り離して blink.cmp 統合を検証するための、NVIM_APPNAME方式のサンドボックス環境
+
+---
+
+以降は内部実装・設計判断の記録（開発者向け）。
+
 ## Design goals
 
 - Neovim only. No Vim (vanilla) compatibility layer, no Vimscript.
@@ -85,7 +384,7 @@ lua/skk/
 
 **コマンドライン中のフローティングウィンドウには `redraw` が必要**: コマンドライン編集中（Enterを押す前）に新規作成・再配置したフローティングウィンドウは、Neovim の通常の画面再描画サイクルには乗らず、次にコマンドラインを抜けるまで実際には描画されないことを実機で確認した（挿入モードでは次のキー入力ごとに通常の再描画が走るため問題にならない）。`mode_indicator.lua` はコマンドラインモード中、ウィンドウの表示/非表示のたびに明示的に `vim.cmd("redraw")` を呼ぶことでこれに対処している。この知見は今後の候補選択ウィンドウのコマンドライン対応にもそのまま適用する。
 
-**henkan（`▽`/`▼`、辞書変換）のコマンドライン対応**: `henkan/preedit.lua` はコマンドラインでは extmark を使わず、コマンドライン文字列そのものへの直接書き込みで `▽`/`▼` を表示する（ddskk/skkeleton と同様の方式。anchor時点の `getcmdpos()` を基準に、表示中のマーカーテキストの長さを追跡し、更新のたびに削除→挿入し直す）。候補選択ウィンドウ（`henkan/candidate_window.lua` の `M.show_cmdline()`）は `relative="editor"` でコマンドライン行のすぐ上に固定表示し、上記の `redraw` 強制もあわせて適用する。実際の検索（`/`・`?`）・置換（`:%s`）の一部として変換した文字列がそのまま使われても問題なく動作することを実機で確認済み。内蔵ターミナルへの対応は行わない方針（下記「既知の制限」参照）。
+**henkan（`▽`/`▼`、辞書変換）のコマンドライン対応**: `henkan/preedit.lua` はコマンドラインでは extmark を使わず、コマンドライン文字列そのものへの直接書き込みで `▽`/`▼` を表示する（ddskk/skkeleton と同様の方式。anchor時点の `getcmdpos()` を基準に、表示中のマーカーテキストの長さを追跡し、更新のたびに削除→挿入し直す）。候補選択ウィンドウ（`henkan/candidate_window.lua` の `M.show_cmdline()`）は `relative="editor"` でコマンドライン行のすぐ上に固定表示し、上記の `redraw` 強制もあわせて適用する。実際の検索（`/`・`?`）・置換（`:%s`）の一部として変換した文字列がそのまま使われても問題なく動作することを実機で確認済み。内蔵ターミナルへの対応は行わない方針（前述の「既知の制限」参照）。
 
 ### 変換（`▽`/`▼`、henkan）(`henkan/`, `dict/`)
 
@@ -143,7 +442,7 @@ lua/skk/
 
 ### blink.cmp ネイティブソース統合 (`blink_source.lua`)
 
-skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブソースとしても動作する（`sources.providers` への登録自体はこのプラグインの外、ユーザー設定側の責務。後述「使い方」参照）。`▽`/abbrev（見出し語入力中）状態のときだけ `dict.lookup_prefix()` による前方一致検索の結果をライブ補完候補として出す（denops版 skkeleton の `getCompletionResult()` 相当）。
+skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブソースとしても動作する（`sources.providers` への登録自体はこのプラグインの外、ユーザー設定側の責務。前述の「使い方」参照）。`▽`/abbrev（見出し語入力中）状態のときだけ `dict.lookup_prefix()` による前方一致検索の結果をライブ補完候補として出す（denops版 skkeleton の `getCompletionResult()` 相当）。
 
 **v2（経緯）**: 最初の実装（v1）は前方一致で見つかった読みごとに無条件で実際の変換候補（`"1"` コマンド）まで取得していたが、1回のキー入力で最大 `max_items+1` 回もの同期TCPラウンドトリップが発生しうる構造的な問題があった（下記「SKKサーバーとの通信の信頼性」参照）ため、v2 ではライブ補完で返すのを前方一致する**読みの一覧**のみに絞っていた。
 
@@ -159,10 +458,10 @@ skk.nvim は [blink.cmp](https://github.com/Saghen/blink.cmp) のネイティブ
 
 #### 実装上の既知のクセ（実機で発見）
 
-- **`show()` の再トリガー**: `▽` の間、読みが1文字変わるたびに `SkkHenkanChanged` は毎回発火するが、blink.cmp の `show()` は「メニューが既に開いていて `providers` を指定しない場合は何もしない」というガードを持つ。skkeleton なら実バッファのテキスト変化で blink.cmp 自身の自動再取得に乗れるが、skk.nvim の `▽`/`▼` は extmark 表示で実バッファが変化しないため乗れない。ユーザー設定側で `show()` を呼ぶときは必ず `providers = { "skk" }` を明示し、メニューが開いているかどうかに関わらず毎回強制的に再トリガーする必要がある（省略すると、▽に入った直後の1回目でメニューが開いた後、読みが伸びても候補リストが更新されないまま止まる）。詳細は下記「使い方」のサンプルコード参照。
+- **`show()` の再トリガー**: `▽` の間、読みが1文字変わるたびに `SkkHenkanChanged` は毎回発火するが、blink.cmp の `show()` は「メニューが既に開いていて `providers` を指定しない場合は何もしない」というガードを持つ。skkeleton なら実バッファのテキスト変化で blink.cmp 自身の自動再取得に乗れるが、skk.nvim の `▽`/`▼` は extmark 表示で実バッファが変化しないため乗れない。ユーザー設定側で `show()` を呼ぶときは必ず `providers = { "skk" }` を明示し、メニューが開いているかどうかに関わらず毎回強制的に再トリガーする必要がある（省略すると、▽に入った直後の1回目でメニューが開いた後、読みが伸びても候補リストが更新されないまま止まる）。詳細は前述の「使い方」のサンプルコード参照。
 - **コマンドラインモードでの range 計算**: `enter_key` は挿入モードだけでなくコマンドラインモード（単語登録UIの `vim.fn.input()` 等）にもマップされるため、コマンドラインモード中に `▽` 変換が行われることがある。blink.cmp 自身がコマンドラインモードでは「行番号は常に0」という前提を置いているため、`get_completions()` の textEdit range 計算はコマンドラインモードかどうかで分岐させる必要がある（通常バッファの行番号をそのまま使うと候補プレビュー処理がクラッシュする）。実装済み。
 - **キーワード抽出との衝突**: blink.cmp 本体は、どのソースの候補であっても一律に「実バッファのカーソル位置から独自に抽出した『キーワード』」（Unicode の「文字」カテゴリ基準。漢字を含む）を問い合わせ文字列として、各候補の `filterText`（無ければ `label`）に対してファジーマッチをかける（`completion/list.lua` の `list.fuzzy()`）。`is_incomplete_forward`/`is_incomplete_backward` に関わらず必ず行われ、ソース側でバイパスする公式な手段は無い。カーソル直前に実テキストとして漢字や英数字が続いていると、それが丸ごと「キーワード」として抽出され、こちらが返す `filterText`（読みそのもの）とほぼ一致しないためフィルタで全滅し、候補ウィンドウ自体が開かない。対策として `get_completions()` は blink.cmp 自身が実際に抽出するのと同じ関数（`blink.cmp.fuzzy.get_keyword_range()`）を呼んで抽出結果を先読みし、`filterText` の先頭に前置している（blink.cmp の非公開に近い内部実装に依存しているため、blink.cmp のアップデートで壊れる可能性がある。`pcall` で保護済み）。
-- **abbrev モードの対称性**: abbrev モード（`/` から始める、見出しが ASCII 文字列そのものになるモード）でも `▽` と同様にライブ補完が効くべきだが、当初 `get_completions()` が `phase == "midashi"` のみを対象にしていたため、abbrev モード中は候補ウィンドウが一切出ない不具合があった。`henkan/state.lua` の実際の変換候補検索（`M.space()`/`M.search()`）は元々 `"midashi"` と `"abbrev"` を対称に扱っているため、`get_completions()` の phase 判定にも `"abbrev"` を追加して修正済み。ユーザー設定側の `enabled()` と `SkkHenkanChanged` ハンドラの phase 判定にも、同様に `"abbrev"` を含める必要がある（下記「使い方」参照）。
+- **abbrev モードの対称性**: abbrev モード（`/` から始める、見出しが ASCII 文字列そのものになるモード）でも `▽` と同様にライブ補完が効くべきだが、当初 `get_completions()` が `phase == "midashi"` のみを対象にしていたため、abbrev モード中は候補ウィンドウが一切出ない不具合があった。`henkan/state.lua` の実際の変換候補検索（`M.space()`/`M.search()`）は元々 `"midashi"` と `"abbrev"` を対称に扱っているため、`get_completions()` の phase 判定にも `"abbrev"` を追加して修正済み。ユーザー設定側の `enabled()` と `SkkHenkanChanged` ハンドラの phase 判定にも、同様に `"abbrev"` を含める必要がある（前述の「使い方」参照）。
 
 #### 外部UI（blink.cmp）とのキー競合と `passthrough_guard`（実機で発見・重要）
 
@@ -192,7 +491,7 @@ blink.cmp の既定キーマップ（`<C-y>` = accept）で検証していたと
 3. **候補パースのオーバーヘッド**: `_parse_response()` が候補1件ごとに `vim.fn.iconv()` を呼んでいたため、候補数の多い読み（数百件になることがある）で体感できるレベルに遅くなっていた。応答本体を1回だけ丸ごと UTF-8 に変換してから候補に分割するよう修正済み（`M._parse_prefix_response()` も同様）。
 4. **タイムアウト後の残留データ**: `send_request_and_wait()` はタイムアウトしても接続を閉じていなかったため、OS側のソケット受信バッファに残った「遅れて届いた応答」を、次の無関係なリクエストへの応答として誤って受け取ってしまうことがあった。タイムアウト時は接続を `close()` して `client = nil` にし、次回は必ず新しい接続を張り直すよう修正済み。
 5. **辞書側の変則エントリ**: 上記4の引き金として、`jawiki` 辞書に含まれる `t(concat "\057")c`（SKKのプログラム候補構文がそのまま読みとして紛れ込んだもの）のような、読みの中に空白を含む変則エントリが、`M._parse_prefix_response()` の以前のトークナイズ（空白でも区切っていた）によって誤分割され、存在しない断片をサーバーに問い合わせる原因になっていた。区切りを `"/"` のみにするよう修正済み。
-6. **Phase 2の from_skkserv だけでは防ぎきれない notfound フォールバック（実機で発見・重要）**: Phase 2（下記「blink.cmp ネイティブソース統合」参照）は、SKKサーバー自身が `"4"` で存在を表明した読み（`from_skkserv`）に限って `"1"` を送ることで notfound フォールバックを避ける設計にしていたが、これだけでは不十分だった。`jawiki` 辞書に含まれる `a(concat ...)` のような上記5と同系統の変則エントリ（プログラム候補構文が読みに紛れ込んだもの）について、yaskkserv2 の `"4"`（前方一致）では見つかるのに `"1"`（完全一致）では notfound になり、`google-japanese-input` フォールバック（Google 翻訳の `transliterate` API への問い合わせ。既定は `notfound` 時のみ発動）がタイムアウトして詰まる事象が実機で確認された。abbrev モード（ASCII文字列をそのまま前方一致検索する）はこの種の変則エントリに当たりやすく、かつ辞書内でソート順が先頭に来やすいため、`skkserv_candidate_limit` を絞っても発生しうる。追加の防御として、読みに `(` `)` `"` `\` や制御文字が含まれる場合は `from_skkserv` に入っていても `"1"` を送らないようにした（`blink_source.lua` の `looks_safe_for_skkserv_lookup()`）。より根本的には、yaskkserv2 側の設定 `google-japanese-input = disable`（既定は `notfound`）でこのフォールバック自体を無効化することもできる。
+6. **Phase 2の from_skkserv だけでは防ぎきれない notfound フォールバック（実機で発見・重要）**: 上記の Phase 2 は、SKKサーバー自身が `"4"` で存在を表明した読み（`from_skkserv`）に限って `"1"` を送ることで notfound フォールバックを避ける設計にしていたが、これだけでは不十分だった。`jawiki` 辞書に含まれる `a(concat ...)` のような上記5と同系統の変則エントリ（プログラム候補構文が読みに紛れ込んだもの）について、yaskkserv2 の `"4"`（前方一致）では見つかるのに `"1"`（完全一致）では notfound になり、`google-japanese-input` フォールバック（Google 翻訳の `transliterate` API への問い合わせ。既定は `notfound` 時のみ発動）がタイムアウトして詰まる事象が実機で確認された。abbrev モード（ASCII文字列をそのまま前方一致検索する）はこの種の変則エントリに当たりやすく、かつ辞書内でソート順が先頭に来やすいため、`skkserv_candidate_limit` を絞っても発生しうる。追加の防御として、読みに `(` `)` `"` `\` や制御文字が含まれる場合は `from_skkserv` に入っていても `"1"` を送らないようにした（`blink_source.lua` の `looks_safe_for_skkserv_lookup()`）。より根本的には、yaskkserv2 側の設定 `google-japanese-input = disable`（既定は `notfound`）でこのフォールバック自体を無効化することもできる。
 
 **送りありの前方一致補完は現時点で提供していない**（`dict.lookup_prefix()` は okuri-nasi のみに絞っている。プロトコル・実用上の理由による）。
 
@@ -205,254 +504,3 @@ blink.cmp の既定キーマップ（`<C-y>` = accept）で検証していたと
 モードが切り替わった瞬間（`<C-j>`、または `l`/`q`/`L`）、カーソル位置にフローティングウィンドウでグリフ（`ひら`/`カタ`/`latn`/`ＬＡ`）を表示する。実際に次のキー入力があった時点で消える（`capture.lua` の `on_key()` が毎回呼ぶ `mode_indicator.hide()` が担当する）。
 
 `<C-j>` によるモード遷移は `vim.on_key()` の `on_key()` を通らず、`init.lua` が `vim.keymap.set()` 経由で `capture.transition()` を直接呼ぶ別ルートなので、インジケーター表示もそちらで個別に行っている（過去、ここが漏れて `<C-j>` だけインジケーターが出ない不具合があった）。
-
-### モード (`mode.lua` + `kana_util.lua`)
-
-本家 SKK は5モード（半角英数/ひらがな/カタカナ/全角英数/半角カナ）だが、半角カナは実装しない方針としたため、このプラグインでは4モードを実装している。
-
-| モード              | 内容                                                                                                 |
-| ------------------- | ---------------------------------------------------------------------------------------------------- |
-| `ascii`（半角英数） | SKK が事実上 OFF の状態。キー入力は完全パススルー                                                    |
-| `hira`（ひらがな）  | 通常のローマ字入力                                                                                   |
-| `kata`（カタカナ）  | ローマ字入力の結果をカタカナで表示                                                                   |
-| `zenei`（全角英数） | 印字可能な半角ASCII文字をすべて全角に変換する（`q` を打っても `ｑ`。モード切替キーとしては扱わない） |
-
-**モード遷移表（`lua/skk/mode.lua`）:**
-
-```
-半角英数 --<C-j>--> ひらがな
-全角英数 --<C-j>--> ひらがな
-ひらがな --l-->     半角英数
-ひらがな --q-->     カタカナ
-ひらがな --L-->     全角英数
-カタカナ --l-->     半角英数
-カタカナ --q-->     ひらがな
-カタカナ --L-->     全角英数
-```
-
-`l`/`q`/`L` は印字可能な文字なので `capture.lua` の `vim.on_key()` コールバック内で、**未確定のローマ字バッファが空のときに限り**モード切替キーとして特別扱いする（バッファが空でなければ通常のローマ字入力として処理する）。`<C-j>` は制御キーなので `init.lua` が通常の `vim.keymap.set` 経由で `capture.transition()` を呼ぶ。
-
-**半角カナモードについて:** 当初は本家 SKK にならって実装する計画だったが、実際に試したところ**半角カナを挿入するとターミナルエミュレーターの動作が不安定になる事例が確認された**ため、実装しない方針に変更した。`<C-q>` キーはモード切替としては使わないが、abbrev モード中に限り「全角変換して確定」の意味で使う（上記の変換セクション参照）。
-
-**カタカナへの変換方式:** `kana_table.lua` をカタカナ版として複製するのではなく、`kana_util.lua` の変換関数を「ひらがな確定後の後処理」として適用する方式にしている。
-
-- ひらがな→カタカナ: ひらがな (`U+3041`–`U+3096`) とカタカナ (`U+30A1`–`U+30F6`) は小書き文字を含め例外なく `+0x60` のオフセットで対応しているため、コードポイント演算1つで変換できる。
-- 半角英数→全角英数: 半角ASCII (`0x21`–`0x7E`) は `+0xFEE0` で全角形 (`U+FF01`–`U+FF5E`) に対応する。半角スペース (`0x20`) だけ全角スペース (`U+3000`) への特別扱いが必要（`+0xFEE0` すると未割り当ての `U+FF00` になってしまうため）。
-
-この方式なら `kana_table.lua` は1つのまま維持でき、表の二重管理・ズレのリスクがない（実際、今回小文字かな `xa`/`xya` 等を追加した際もカタカナ側は自動的に追随した）。
-
-**なぜ自前で UTF-8 デコード/エンコードを書いているか:** Lua 5.3+ の標準 `utf8` ライブラリは LuaJIT（Neovim の既定の Lua 実装）には含まれていない。この開発環境（`lua5.4`）で動くコードでも、実際の Neovim (LuaJIT) では `utf8.codes` 等が存在せず壊れる可能性があるため、`kana_util.lua` はバイト列から直接コードポイントを読み書きする最小限のデコーダ/エンコーダを自前で実装している。
-
-## 既知の制限
-
-- 複数辞書のマージ・SKKサーバー連携は実装済み（`dict.add_dict()`/`dict.add_dictionary_async()`/`require("skk").setup({ skkserv = {...} })`）。実機の yaskkserv2 での動作確認済み。他の skkserv 実装（`dbskkd-cdb` 等）は未検証。
-- 単語登録は実装済み（`vim.fn.input()` の再帰呼び出しによるUI、上記「単語登録UI」参照）。バッファ・コマンドラインどちらの変換からでも動作し、実機確認済み。
-- 通常のバッファ（挿入モード）・コマンドラインモード（`c`、`/`・`?`・`:` いずれも含む）ともに、ローマ字→かな変換・4モード切替・モードインジケーター・辞書変換（`▽`/`▼`、候補選択ウィンドウ）に対応済み（`target.lua`、実機確認済み）。実際の検索・置換（`:%s`）とも問題なく共存する。
-- **内蔵ターミナル（`t`）には対応しない方針**とした。理由は以下の2点：
-  - （技術的コスト）内蔵ターミナルはNeovimの通常のバッファではなくPTYであり、`nvim_buf_set_text()`のような直接書き込みができず、確定した文字列を`chansend()`でPTYにバイト列として送る形になる。未確定のローマ字断片の literal display や `▽`/`▼` のpreedit表示、それを`<BS>`等で書き換える操作を、PTYへのバイト列送出という一方向的な手段だけで安全に実現するのは実装難易度が大きく上がる。実際、[skkeleton](https://github.com/vim-skk/skkeleton)を内蔵ターミナルで試した際、`<C-j>`で有効化はできるものの確定したはずの文字がターミナルに残らない不具合が実機で確認されている。
-  - （費用対効果）内蔵ターミナル上で日本語などの長文を入力する機会はもともと少なく、また内蔵ターミナルではシェル補完は効くが`blink.cmp`のような補完エンジンは機能しないため、このプラグインが元々解決しようとした課題（`blink.cmp`との相性、上記「なぜ作るか」参照）にとって内蔵ターミナル対応の価値は薄いと判断した。
-- `<Left>`/`<Right>` などのカーソル移動キーやマウスクリックは、henkan 非アクティブ時の未確定ローマ字バッファについては安全に扱える（`is_target_key` に該当しないキーが来た時点でバッファを無条件にリセットするため、確定済みかなを破壊するようなバイト列破損は起こらない）が、**表示上の不整合**（未確定ローマ字がそのまま残る）は起こりうる。henkan（▽/▼）アクティブ中にこれらのキーが来た場合の挙動は未検証。
-- blink.cmp のネイティブソースとしての統合は、Phase 2（実際の変換候補=漢字まで表示する設計、上記「blink.cmp ネイティブソース統合」参照）まで実装・実機確認済み。サンドボックス環境（[nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox)）で通常バッファ・コマンドラインモード双方の動作確認が完了しており、`show()` 再トリガーの不具合・外部UIとのキー競合（`passthrough_guard`）も修正済み。実機の日常設定 [nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) への実際の配線はまだ行っていない。設計上、送りありの前方一致補完は非対応、候補を選ぶ前のライブなゴーストテキストプレビューも出せない。
-- `egg_like_newline = false`（SKK本来の、確定+改行の動作）は実装・動作確認済みだが、`vim.api.nvim_feedkeys()` で `<CR>` を再注入する方式のため、`<CR>` に他プラグインのマッピングが被っている環境では想定外の相互作用が起こる可能性がある。
-- 候補選択ウィンドウの表示位置自動切替（上下）は `vim.fn.screenpos()` の実測に依存するため、`nvim --headless`（UI未接続）環境ではテストできない（実機での動作確認のみ）。
-- モードラインへのモード表示（現状はカーソル位置への一時的なインジケーターのみ）は未実装。
-
-## 使い方（現状）
-
-```lua
-require("skk").setup({
-  enter_key = "<C-j>", -- 半角英数/全角英数 -> ひらがな。henkan 中は <CR> 相当（確定）。省略時 "<C-j>"
-
-  sticky_shift_enabled = true, -- Sticky-shift の有効/無効。省略時 true
-  sticky_shift_key = ";",      -- Sticky-shift のトリガーキー。省略時 ";"（sticky_shift_enabled=false なら無視される）
-
-  egg_like_newline = true, -- true: ▼状態での<CR>は確定のみ（改行しない、skk.nvimのデフォルト）
-                            -- false: 確定に加えて改行も挿入する（SKK本来の動作）
-
-  candidate_window = {
-    border = "rounded",   -- "rounded"/"single"/"double"/"none"/自前の文字配列。省略時 "rounded"
-    annotation = true,    -- 候補一覧に辞書の注釈（;注釈）を表示するか。省略時 true
-    page_indicator = true, -- 最下行に "現在ページ/全ページ数"（例: "2/3"）を表示するか。省略時 true
-    threshold = 2, -- <SPC>を何回打鍵した時点で候補一覧ウィンドウを表示するか。省略時 2
-  },
-
-  user_dictionary = "~/.local/share/skk/SKK-JISYO.user", -- 個人辞書（学習）ファイルのパス。省略時この値
-})
-```
-
-初期モードは `半角英数`（SKK 実質 OFF）。挿入モードで `<C-j>` を押すとひらがなモードに入る。以降は前述のモード遷移表（`l`/`q`/`L`）でモードを切り替えながら入力する。`:SkkMode` コマンドで現在のモードを確認できる。
-
-辞書を使う（`▽`/`▼` 変換）には、`setup()` とは別に辞書を読み込んで登録する必要がある。SKK-JISYO.L や .LL のような大きな辞書ファイルは `load_dictionary_async()`（非同期・遅延パース）を推奨する:
-
-```lua
-local dict = require("skk.dict")
-
-dict.load_dictionary_async("/path/to/SKK-JISYO.L", "euc-jp", function(ok, err)
-  if not ok then
-    vim.notify("skk.nvim: 辞書の読み込みに失敗しました: " .. tostring(err), vim.log.levels.WARN)
-  end
-end)
-```
-
-小さい辞書や同期読み込みで十分な場合は `file_source.load()` + `dict.set_dict()` でも良い:
-
-```lua
-local dict = require("skk.dict")
-local file_source = require("skk.dict.file_source")
-
-local parsed, err = file_source.load("/path/to/SKK-JISYO.L", "euc-jp") -- 文字コードは辞書ファイルに合わせる
-if parsed then
-  dict.set_dict(parsed)
-end
-```
-
-複数の辞書ファイルや SKKサーバーを併用する場合（`skkeleton` の `globalDictionaries`/`skk_server` に相当する構成）:
-
-```lua
-require("skk").setup({
-  skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" },
-  -- ...他のオプション
-})
-
-local dict = require("skk.dict")
-dict.load_dictionary_async("/usr/share/skk/SKK-JISYO.L", "euc-jp") -- メイン辞書
-dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.edict2", "utf-8")
-dict.add_dictionary_async("/usr/local/share/skk/SKK-JISYO.emoji", "utf-8")
-```
-
-同じ構成は `setup()` の `dictionaries` オプションだけでも書ける（`dict.add_dictionary_async()` を登録順に呼ぶのを `setup()` が代行するだけなので、優先順位や非同期・遅延パースといった挙動は上の書き方と全く同じ）。`setup()` 呼び出しが一箇所にまとまるので、`config = function() ... end` 内を短く保ちたい場合に使うとよい:
-
-```lua
-require("skk").setup({
-  skkserv = { host = "127.0.0.1", port = 1178, encoding = "euc-jp" },
-  dictionaries = {
-    { path = "/usr/share/skk/SKK-JISYO.L", encoding = "euc-jp" }, -- メイン辞書
-    { path = "/usr/local/share/skk/SKK-JISYO.edict2", encoding = "utf-8" },
-    { path = "/usr/local/share/skk/SKK-JISYO.emoji", encoding = "utf-8" },
-  },
-  on_dictionary_loaded = function(path, ok, err) -- 省略可。読み込み完了のたびに呼ばれる
-    if not ok then
-      vim.notify("skk.nvim: " .. path .. " の読み込みに失敗: " .. tostring(err), vim.log.levels.WARN)
-    end
-  end,
-  -- ...他のオプション
-})
-```
-
-`dictionaries` は常に `add_dictionary_async()`（非同期・遅延パース、複数辞書の追加登録）を使う。1件目からメイン辞書として `load_dictionary_async()` を使いたい場合（＝2件目以降を追加した時点で1件目を丸ごと置き換えたい場合）は、引き続き上の `dict.load_dictionary_async()` を直接呼ぶ書き方を使う。
-
-`skk_test_init.lua` は環境変数 `SKK_SKKSERV_HOST`/`SKK_JISYO_PATHS`（`:` 区切り）/`SKK_JISYO_PATHS_ENCODING` で、この構成をそのまま試せるようにしてある（ファイル冒頭のコメント参照）。
-
-blink.cmp と組み合わせる場合は、`require("skk").setup({ blink = {...} })` で `blink_source.lua` 側の設定（`max_items`・`skip_skkserv`・`skkserv_candidates`・`skkserv_candidate_limit`、詳細は上記「blink.cmp ネイティブソース統合」参照）を渡した上で、blink.cmp 自体の `sources.providers` にソースとして登録する（登録自体はこのプラグインの外、ユーザー設定側の責務）。`▽`/`▼` に合わせたメニューの表示切替は `SkkHenkanChanged` autocmd を使う（詳細は上記「blink.cmp ネイティブソース統合」参照）:
-
-```lua
-require("skk").setup({
-  blink = {
-    max_items = 50,               -- 前方一致で取得する読みの上限件数。省略時50
-    skip_skkserv = false,         -- "4"（読み一覧取得）にSKKサーバーを含めるか。省略時false
-    skkserv_candidates = true,    -- "1"（実際の変換候補取得）にSKKサーバーを含めるか。省略時true
-    skkserv_candidate_limit = 20, -- SKKサーバーへ"1"を投げる読みの上限件数。省略時20
-  },
-  -- ...他のオプション
-})
-
-require("blink-cmp").setup({
-  sources = {
-    default = { "skk", "lsp", "path", "snippets", "buffer" },
-    providers = {
-      skk = {
-        name = "skk",
-        module = "skk.blink_source",
-        enabled = function()
-          -- "midashi"（▽、通常のかな漢字変換）だけでなく "abbrev"
-          -- （▽、"/" で始める英字そのままの見出し）でも有効にする。
-          -- 詳細は下記「さらに注意4」参照。
-          local phase = require("skk.henkan.state").get_phase()
-          return phase == "midashi" or phase == "abbrev"
-        end,
-      },
-    },
-  },
-})
-
--- ▽/▼ の表示に合わせて blink.cmp のメニューを show()/hide() する。
--- ▼（候補選択）中は skk.nvim 自身の候補選択ウィンドウが出るため hide() し、
--- blink.cmp のメニューと競合しないようにする。
---
--- 【重要】show() には必ず providers = { "skk" } を明示すること。
--- blink.cmp の show() は「メニューが既に開いていて providers を
--- 指定しない場合は何もしない」というガードを持つ。skk.nvim の ▽/▼ は
--- extmark（仮想テキスト）表示で実バッファは変化しないため、blink.cmp
--- 自身の「実テキストの変更を検知して自動的に再要求する」通常の仕組みは
--- 働かない。providers を省略すると、▽に入った直後（読みが空文字）の
--- 1回目でメニューが開いた後、読みが伸びても2回目以降の show() が
--- 無視され、候補リストが更新されないまま止まってしまう。
-vim.api.nvim_create_autocmd("User", {
-  pattern = "SkkHenkanChanged",
-  callback = function(ev)
-    local phase = ev.data and ev.data.phase
-    if phase == "midashi" or phase == "abbrev" then
-      vim.schedule(function()
-        require("blink.cmp").show({ providers = { "skk" } })
-      end)
-    else
-      require("blink.cmp").hide()
-    end
-  end,
-})
-```
-
-## 開発時の動作確認
-
-普段の Neovim 設定を汚さずに、このリポジトリ単体で動作確認できる最小 init（`skk_test_init.lua`）を同梱している。
-
-```bash
-nvim -u ./skk_test_init.lua
-```
-
-起動後、挿入モードで `<C-j>` → `ka`・`kka`・`kyou`・`xtu` などを打って変換されるか確認する。モード切替も試す: `q`（ひらがな⇔カタカナ）、`l`（→半角英数）、`L`（→全角英数）。`:SkkMode` で現在のモードを確認できる。
-
-`skk_debug_float.lua` は、コマンドラインモード編集中にフローティングウィンドウが実際に画面へ反映されるかどうかを切り分けるための使い捨てデバッグスクリプト（`nvim -u skk_test_init.lua -c "source skk_debug_float.lua"` で読み込む）。skk.nvim 本体の一部ではないが、コマンドライン向けUI（候補選択ウィンドウ等）の実装・デバッグ時に再び使う可能性があるため当面リポジトリに残してある。
-
-## テスト
-
-[plenary.nvim](https://github.com/nvim-lua/plenary.nvim) の busted 互換ランナーで `tests/*_spec.lua` を実行する。`make test` で plenary.nvim を `.tests/site/pack/deps/start/` に自動取得してから実行するので、個人の Neovim 環境に plenary.nvim が入っているかどうかに関わらず動く。
-
-```bash
-make test
-```
-
-手動で実行したい場合、または既に別の場所に plenary.nvim がある場合は `PLENARY_DIR` 環境変数で指定できる。
-
-```bash
-PLENARY_DIR=~/.local/share/nvim/lazy/plenary.nvim \
-  nvim --headless --noplugin -u tests/minimal_init.lua \
-  -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
-```
-
-## ロードマップ
-
-1. ~~ローマ字 → かな変換エンジン~~ ✅
-2. ~~`vim.on_key()` によるキー横取り~~ ✅
-3. ~~4モード（半角英数/ひらがな/カタカナ/全角英数）の相互切替~~ ✅
-4. ~~`▽`/`▼` の pre-edit 表示を extmark ベースに置き換える~~ ✅
-5. ~~辞書検索（送りなし・送りあり・abbrev）~~ ✅
-6. ~~候補選択ウィンドウ（複数候補の一覧表示・ページング）~~ ✅
-7. ~~Sticky-shift~~ ✅
-8. ~~個人辞書・学習（recency-based の並び替え）~~ ✅
-9. ~~複数辞書のマージ・skkserv 連携~~ ✅
-10. ~~単語登録（候補が見つからない読みをその場で辞書に追加する）~~ ✅（`vim.fn.input()` の再帰呼び出しによるUI。再帰的な単語登録も可能。実機確認済み、上記「単語登録UI」参照）
-11. ~~blink.cmp ネイティブソースとしての統合~~ ✅（読みのみのライブ補完=v2、実際の変換候補=漢字を出す設計=Phase 2 とも、サンドボックス環境 [nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox) で実機動作確認済み。実機の日常設定への配線が次のステップ、詳細は上記「blink.cmp ネイティブソース統合」「既知の制限」参照）
-12. ~~周辺 UI（モードインジケーター）~~ ✅（カーソル位置への一時表示のみ。モードライン表示は未着手）
-13. ~~コマンドラインモードへの対応~~ ✅（`target.lua`。ローマ字→かな変換・4モード切替・モードインジケーター・辞書変換（`▽`/`▼`、候補選択ウィンドウ）まで実機確認済み。内蔵ターミナルは非対応と決定、下記「既知の制限」参照）
-14. `vim.uv.new_work()` によるスレッドプール並列パース（大きな辞書の起動負荷をさらに削減）
-
-## 参考にしたプロジェクト
-
-- [vim-skk/skkeleton](https://github.com/vim-skk/skkeleton) — 単語登録UI（`vim.fn.input()` の再帰呼び出し、`<Esc>`/`<C-g>` をセンチネル文字列で判定する手法）は `registerWord()`（`denops/skkeleton/function/dictionary.ts`）を実装前に読んで参考にした
-- [uga-rosa/skk-learning.nvim](https://github.com/uga-rosa/skk-learning.nvim) — Lua での SKK 実装入門
-- [yuys13/skk-develop.nvim](https://github.com/yuys13/skk-develop.nvim) — SKK辞書ダウンローダー
-- [wachikun/yaskkserv2](https://github.com/wachikun/yaskkserv2) — skkserv 連携の実機動作確認に使用したSKKサーバー
-- [Saghen/blink.cmp](https://github.com/Saghen/blink.cmp) — ネイティブソースのAPI（`get_completions`/`execute`/`resolve`、`default_implementation` を自分で呼ぶ必要がある点等）を `blink_source.lua` 実装前に読んで参考にした
-- [nabehan/nvim-config-blink-skkeleton](https://github.com/nabehan/nvim-config-blink-skkeleton) — 実機で skkeleton + blink.cmp を運用している設定一式。`skkeleton_source.lua`（textEdit の range 計算、`default_implementation` 呼び出し忘れの教訓）や `blink.lua`（`▽`/`▼` に合わせた show()/hide()、`▼` 中の抑止、キーマップ設定）を `blink_source.lua` 設計時に参考にした。実機が既定の `<C-y>` ではなく `<CR>` を accept に割り当てていた事実は `passthrough_guard` の設計（キー決め打ちではなく `is_visible()` 判定にする）を見直す決め手になった
-- [nabehan/nvim-skk-sandbox](https://github.com/nabehan/nvim-skk-sandbox) — 実機の日常設定とは切り離して blink.cmp 統合を検証するための、NVIM_APPNAME方式のサンドボックス環境

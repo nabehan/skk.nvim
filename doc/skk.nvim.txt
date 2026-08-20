@@ -1,0 +1,545 @@
+*skk.nvim.txt*    Neovim専用・denops非依存のLua実装SKK（日本語入力）プラグイン
+
+Author: nabehan
+License: 未定（リポジトリ参照）
+
+==============================================================================
+目次                                                    *skk.nvim-contents*
+
+  1. はじめに ................................ |skk.nvim-introduction|
+  2. 要件 ..................................... |skk.nvim-requirements|
+  3. インストール .............................. |skk.nvim-installation|
+  4. クイックスタート .......................... |skk.nvim-quickstart|
+  5. モード .................................... |skk.nvim-modes|
+  6. 辞書 ...................................... |skk.nvim-dictionaries|
+  7. 候補選択ウィンドウ ........................ |skk.nvim-candidate-window|
+  8. 単語登録 .................................. |skk.nvim-word-registration|
+  9. setup() オプション ........................ |skk.nvim-options|
+ 10. コマンド .................................. |skk.nvim-commands|
+ 11. ハイライトグループ ........................ |skk.nvim-highlights|
+ 12. blink.cmp 連携 ............................ |skk.nvim-blink-cmp|
+ 13. 既知の制限 ................................ |skk.nvim-limitations|
+ 14. リンク .................................... |skk.nvim-links|
+
+==============================================================================
+1. はじめに                                         *skk.nvim-introduction*
+
+skk.nvim は Neovim 専用（Vim 非対応）、denops 等の外部プロセスに依存しな
+い、Lua だけで実装された SKK（日本語入力）プラグインです。
+
+ローマ字→かな/カタカナ変換、4モード切替、辞書変換（`▽`/`▼`、送りあり/
+送りなし/abbrev）、候補選択ウィンドウ、単語登録、Sticky-shift、個人辞書
+（学習）、複数辞書のマージ、SKKサーバー連携、および blink.cmp 用ネイティ
+ブソースに対応しています。挿入モードのバッファに加え、コマンドラインモー
+ド（`:`/`/`/`?`）でも一通り同じ機能が使えます。
+
+内部実装・設計判断の詳しい記録は README を参照してください
+(|skk.nvim-links|)。このヘルプは主に「使い方」のリファレンスです。
+
+==============================================================================
+2. 要件                                             *skk.nvim-requirements*
+
+- Neovim 0.10 以上
+    (`vim.on_key()` の空文字列 return によるキー消費、`vim.schedule()`、
+    extmark 等を使用)
+- 外部プロセスへの依存なし（denops/Deno 不要）
+- 辞書変換を使うには SKK-JISYO 形式の辞書ファイル、または SKKサーバー
+  （skkserv/dbskkd-cdb/yaskkserv2 等）のいずれかが必要
+    (プラグイン自体には辞書は同梱されていません)
+
+==============================================================================
+3. インストール                                     *skk.nvim-installation*
+
+lazy.nvim を使った最小構成例: >lua
+
+    {
+      "nabehan/skk.nvim",
+      config = function()
+        require("skk").setup({})
+
+        require("skk.dict").load_dictionary_async(
+          "/usr/share/skk/SKK-JISYO.L",
+          "euc-jp"
+        )
+      end,
+    }
+<
+辞書ファイル（SKK-JISYO.L 等）は https://github.com/skk-dev/dict から
+入手できます。
+
+==============================================================================
+4. クイックスタート                                   *skk.nvim-quickstart*
+
+初期モードは半角英数（SKK 実質 OFF）です。
+
+1. 挿入モードで <C-j> を押す（|skk.nvim-options| の `enter_key`）と
+   ひらがなモードに入ります。
+2. ローマ字を打つと、かなに変換されながら挿入されます。
+3. 大文字キー（例: `Kanji<SPC>`）または Sticky-shift（デフォルト `;`、
+   例: `;kanji<SPC>`）で辞書変換（`▽`/`▼`）を開始できます。
+   詳細は |skk.nvim-dictionaries| 参照。
+4. `l`/`q`/`L` でモードを切り替えます。詳細は |skk.nvim-modes| 参照。
+5. `:SkkMode` で現在のモードを確認できます（|skk.nvim-commands|）。
+
+コマンドラインモード（`:`、`/`、`?`）でも同じ操作が一通り使えます。
+
+==============================================================================
+5. モード                                                  *skk.nvim-modes*
+
+本家 SKK は5モードですが、半角カナは実装しない方針としたため、skk.nvim
+は4モードです（半角カナを挿入するとターミナルエミュレーターの動作が
+不安定になる事例が実機で確認されたため）。
+
+    モード                内容 ~
+    ascii（半角英数）     SKK が事実上 OFF。キー入力は完全パススルー
+    hira（ひらがな）      通常のローマ字入力
+    kata（カタカナ）      ローマ字入力の結果をカタカナで表示
+    zenei（全角英数）     半角ASCII文字をすべて全角に変換する
+
+モード遷移: >
+    半角英数 --<C-j>--> ひらがな
+    全角英数 --<C-j>--> ひらがな
+    ひらがな --l-->     半角英数
+    ひらがな --q-->     カタカナ
+    ひらがな --L-->     全角英数
+    カタカナ --l-->     半角英数
+    カタカナ --q-->     ひらがな
+    カタカナ --L-->     全角英数
+<
+`l`/`q`/`L` は、未確定のローマ字バッファが空のときに限りモード切替キー
+として扱われます（バッファが空でなければ通常のローマ字入力として処理
+されます）。
+
+促音「っ」は子音の連続（`kka` → `っか`）のほか、`xtu` と打っても単独で
+「っ」になります。`z` + 記号で全角記号も入力できます（`z(` → `（` 等）。
+
+末尾の単独 `n`（例: `nihon` の末尾）は次の入力が来るまで未確定のまま保
+留されます。これは SKK 全般に共通する仕様です。
+
+==============================================================================
+6. 辞書                                            *skk.nvim-dictionaries*
+
+setup() とは別に、辞書を読み込んで登録する必要があります。
+
+大きな辞書ファイル（SKK-JISYO.L・LL 等）は非同期・遅延パースを推奨: >lua
+
+    local dict = require("skk.dict")
+    dict.load_dictionary_async("/path/to/SKK-JISYO.L", "euc-jp", function(ok, err)
+      if not ok then
+        vim.notify("skk.nvim: 辞書の読み込みに失敗しました: " .. tostring(err))
+      end
+    end)
+<
+小さい辞書・同期読み込みで十分な場合: >lua
+
+    local dict = require("skk.dict")
+    local file_source = require("skk.dict.file_source")
+    local parsed = file_source.load("/path/to/SKK-JISYO.L", "euc-jp")
+    if parsed then
+      dict.set_dict(parsed)
+    end
+<
+複数辞書を併用する場合は `dict.add_dict()`/`dict.add_dictionary_async()`
+を使うか、setup() の `dictionaries` オプション（|skk.nvim-options|）で
+まとめて指定します。優先順位は登録順（先に登録したものが優先）。
+
+マージの優先順位は「個人辞書 > SKKサーバー（有効時） > ローカル辞書
+ソース（登録順）」です。`word` が重複する候補は優先順位の高い方だけが
+残ります。
+
+開始トリガーは3種類あります:
+
+    トリガー                  例             動き ~
+    大文字キー                Kanji<SPC>     Shift+文字で▽開始とその
+                                              1文字目を同時に指示
+    Sticky-shift（既定 ";"）  ;kanji<SPC>    ";" で▽開始・送り開始点
+                                              だけを指示
+    "/"（abbrev）             /Bug<SPC>      ASCII文字列そのものを
+                                              見出しにする
+
+送りあり変換は、▽の中でもう一度大文字キー（またはSticky-shiftキー）を
+押すと送り開始点が設定され、子音+母音が確定した瞬間に自動で辞書検索
+（▼への遷移）が起こります（スペース不要）。
+
+SKKサーバー（skkserv/dbskkd-cdb/yaskkserv2 等）は
+`require("skk").setup({ skkserv = { host = "...", port = 1178 } })` で
+有効化します。詳細は |skk.nvim-options| の `skkserv` フィールド参照。
+
+==============================================================================
+7. 候補選択ウィンドウ                          *skk.nvim-candidate-window*
+
+▼ 遷移時にフローティングウィンドウで開きます。1ページ最大7候補。
+
+    キー              動作 ~
+    a s d f j k l     その位置の候補を即選択・確定（ホームポジション）
+    <SPC>             次の7候補（次ページ）
+    x                 前の7候補（前ページ）
+    <C-n>             候補を1件フォーカス移動（次へ、ページ境界で
+                       次ページへ折り返す）
+    <C-p>             候補を1件フォーカス移動（前へ）
+    <CR> / <C-j>      フォーカス中の候補を確定
+
+`candidate_window.threshold`（既定2）で、<SPC> を何回押した時点でウィ
+ンドウ自体を表示するかを調整できます。それまではインラインの `▼候補`
+表示で1件ずつ候補を送るだけです。詳細は |skk.nvim-options| 参照。
+
+<C-n>/<C-p> が blink.cmp 等の補完プラグインに奪われる場合の対策につい
+ては |skk.nvim-options| の `candidate_navigation`、および
+|skk.nvim-blink-cmp| を参照してください。
+
+==============================================================================
+8. 単語登録                                    *skk.nvim-word-registration*
+
+候補が見つからない場合、または候補送り（<SPC>/<C-n>）で末尾の候補から
+次へ進もうとした場合、単語登録UIが開きます（循環はしません）。
+
+- 登録UIに入った瞬間は自動的にひらがなモードで始まります。
+- <Esc>/<C-g>、または空欄で <CR> した場合はキャンセル扱いで、辞書には
+  書き込まず、登録UIに入る直前に表示されていたテキストをそのまま確定
+  します。
+- 単語を入力して <CR> すると個人辞書に書き込まれ、その単語（+送り仮名）
+  が確定します。
+- 登録UIの中でさらに変換して未知語を登録する、再帰的な単語登録にも対応
+  しています。
+
+==============================================================================
+9. setup() オプション                                     *skk.nvim-options*
+                                                              *skk.nvim-setup*
+
+`require("skk").setup({...})` に渡せるオプション一覧です。省略した項目
+はすべてデフォルト値が使われます。全オプションの最新の詳細は
+`lua/skk/init.lua` の `SkkSetupOpts` の docstring も参照してください
+（このヘルプは要約です）。
+
+                                                    *skk.nvim-opt-enter_key*
+enter_key ~
+    半角英数/全角英数 -> ひらがな。henkan 中は確定（<CR>相当）。
+    型: string / デフォルト: "<C-j>"
+
+                                          *skk.nvim-opt-sticky_shift_enabled*
+sticky_shift_enabled ~
+    Sticky-shift の有効/無効。
+    型: boolean / デフォルト: true
+
+                                              *skk.nvim-opt-sticky_shift_key*
+sticky_shift_key ~
+    Sticky-shift のトリガーキー。sticky_shift_enabled=false のときは
+    無視される。
+    型: string / デフォルト: ";"
+
+                                            *skk.nvim-opt-egg_like_newline*
+egg_like_newline ~
+    true: ▼状態での<CR>は確定のみ（改行しない）。
+    false: 確定に加えて改行も挿入する（SKK本来の動作）。
+    型: boolean / デフォルト: true
+
+                                              *skk.nvim-opt-candidate_window*
+candidate_window ~
+    候補一覧ウィンドウの見た目・表示タイミング。table で以下を指定:
+
+        border           "rounded"/"single"/"double"/"none"/自前の文字
+                         配列。デフォルト "rounded"
+        annotation       辞書の注釈（;注釈）を表示するか。デフォルト true
+        page_indicator   最下行に "現在ページ/全ページ数" を表示するか。
+                         デフォルト true
+        threshold        <SPC>を何回打鍵した時点でウィンドウを表示する
+                         か。デフォルト 2
+        fg / bg          非選択の候補行の文字色・背景色
+        border_fg/bg     枠線の色
+        alt_fg / alt_bg  非選択の候補行を1行おきに変える色（縞模様）
+
+    fg/bg/border_fg/border_bg/alt_fg/alt_bg はいずれも省略時はカラー
+    スキームの既定のまま（NormalFloat/FloatBorder）。選択中の行の色は
+    candidate_fg/candidate_bg（下記）で指定する。
+
+                                          *skk.nvim-opt-candidate_navigation*
+candidate_navigation ~
+    候補一覧ウィンドウ表示中の <C-n>/<C-p> によるフォーカス移動の実装
+    方式。table で以下を指定:
+
+        enabled    false にするとこのキーマップ自体を張らない
+                   （vim.on_key() のみに委ねる）。デフォルト true
+        next_key   デフォルト "<C-n>"
+        prev_key   デフォルト "<C-p>"
+
+    blink.cmp 等の補完プラグインが挿入モードに <C-n>/<C-p> の実キー
+    マップを張っている環境では、そちらが vim.on_key() より先にキーを
+    消費してしまい、▼状態でもフォーカスが動かないことがある。この
+    オプションは setup() 呼び出し時点で next_key/prev_key に既に張ら
+    れているマッピングを読み取って保存し、▼状態以外ではそのまま委譲
+    する。そのため、blink.cmp 等の setup() は require("skk").setup()
+    より前に呼んでおく必要がある。
+    バッファローカル・遅延適用のキーマップ（blink.cmp 等）が相手の場
+    合はこの機構だけでは不十分なことがある。詳細は |skk.nvim-blink-cmp|
+    参照。
+
+                                                  *skk.nvim-opt-midashi_fg*
+midashi_fg ~
+    ▽（見出し語入力中）のインライン表示の文字色（abbrevモードの表示に
+    も使われる）。
+    型: string / デフォルト: カラースキームの Comment のまま
+
+                                                  *skk.nvim-opt-midashi_bg*
+midashi_bg ~
+    同上の背景色。
+
+                                                *skk.nvim-opt-candidate_fg*
+candidate_fg ~
+    ▼（変換候補）のインライン表示の文字色。候補一覧ウィンドウの選択中
+    の行のハイライトにも同じグループが使われる。
+    型: string / デフォルト: カラースキームの IncSearch のまま
+
+                                                *skk.nvim-opt-candidate_bg*
+candidate_bg ~
+    同上の背景色。
+
+                                              *skk.nvim-opt-user_dictionary*
+user_dictionary ~
+    個人辞書（学習結果）ファイルのパス。文字コードは常にUTF-8固定。
+    ファイルが無ければ自動的に作られる。
+    型: string / デフォルト: "~/.local/share/skk/SKK-JISYO.user"
+
+                                                      *skk.nvim-opt-skkserv*
+skkserv ~
+    SKKサーバー（skkserv/dbskkd-cdb/yaskkserv2 等）への接続設定。
+    省略時は無効。table で以下を指定:
+
+        host                          必須
+        port                          デフォルト 1178
+        encoding                      デフォルト "euc-jp"
+        timeout_ms                    1回の検索の待ち時間上限。
+                                      デフォルト 300
+        debug                         送受信の生データを vim.notify()
+                                      で出力するか。デフォルト false
+        check_connection              setup() 完了後に一度だけ疎通確認
+                                      を行うか。デフォルト true
+        check_connection_timeout_ms   疎通確認1回あたりのタイムアウト。
+                                      デフォルト 2000
+
+    個人辞書の次、ローカル辞書より先にマージされる。手動での疎通確認は
+    |:SkkCheckSkkserv| コマンドも使える。
+
+                                                        *skk.nvim-opt-blink*
+blink ~
+    blink.cmp ネイティブソース（`lua/skk/blink_source.lua`）の設定。
+    table で以下を指定:
+
+        max_items                 前方一致で取得する読みの上限件数。
+                                  デフォルト 50
+        skip_skkserv              読み一覧の取得("4"コマンド)にSKK
+                                  サーバーを含めるか。デフォルト false
+                                  （含める）
+        skkserv_candidates        実際の変換候補の取得("1"コマンド)に
+                                  SKKサーバーを含めるか。デフォルト true
+        skkserv_candidate_limit   SKKサーバーへ実際に"1"を投げる読みの
+                                  上限件数。デフォルト 20
+        debug_timing              get_completions() の所要時間を
+                                  vim.notify() に出す調査用オプション。
+                                  デフォルト false
+
+    ソース自体の登録（blink.cmp の setup() の sources.providers）は
+    ユーザー設定側で行う必要がある。詳細は |skk.nvim-blink-cmp| 参照。
+
+                                                *skk.nvim-opt-dictionaries*
+dictionaries ~
+    ローカル辞書ファイルの一覧。登録順が優先順位になる。
+    型: { path: string, encoding: string?, name: string? }[]
+    各エントリの encoding は省略時 "euc-jp"。読み込みは setup() を呼ん
+    だ時点で非同期に開始され、起動をブロックしない。
+
+                                        *skk.nvim-opt-on_dictionary_loaded*
+on_dictionary_loaded ~
+    dictionaries の各エントリの読み込みが完了するたびに呼ばれる
+    （成功・失敗いずれも）。
+    型: fun(path: string, ok: boolean, err: string|nil)
+
+setup() の例: >lua
+
+    require("skk").setup({
+      enter_key = "<C-j>",
+      sticky_shift_enabled = true,
+      sticky_shift_key = ";",
+      egg_like_newline = true,
+      candidate_window = {
+        border = "rounded",
+        annotation = true,
+        page_indicator = true,
+        threshold = 2,
+      },
+      user_dictionary = "~/.local/share/skk/SKK-JISYO.user",
+    })
+<
+
+==============================================================================
+10. コマンド                                            *skk.nvim-commands*
+
+                                                              *:SkkMode*
+:SkkMode
+    現在の入力モード（半角英数/ひらがな/カタカナ/全角英数）を
+    vim.notify() で表示する。
+
+                                                        *:SkkCheckSkkserv*
+:SkkCheckSkkserv
+    SKKサーバーへの疎通確認を手動で実行する。setup() の
+    `skkserv.check_connection`（既定 true）による自動チェックとは別
+    に、いつでも再確認したいときに使う。成功時はバージョン文字列を、
+    失敗時は host:port・status・エラー詳細を vim.notify() で表示する。
+    `skkserv` を設定していない場合は何もしない。
+
+==============================================================================
+11. ハイライトグループ                                *skk.nvim-highlights*
+
+    グループ名                     既定のリンク先 ~
+    SkkHenkanMidashi               Comment
+    SkkHenkanCandidate             IncSearch
+    SkkCandidateWindowNormal       NormalFloat
+    SkkCandidateWindowBorder       FloatBorder
+    SkkCandidateWindowNormalAlt    (fg/bgと同じ。既定は縞なし)
+
+`midashi_fg`/`midashi_bg`/`candidate_fg`/`candidate_bg`/`candidate_window`
+配下の色オプション（|skk.nvim-opt-candidate_window| 参照）のいずれかを
+明示的に指定すると、該当グループはリンクではなくその色で直接定義され
+る。指定が無ければ、既にユーザーやカラースキームが定義済みの場合は上書
+きしない。
+
+==============================================================================
+12. blink.cmp 連携                                        *skk.nvim-blink-cmp*
+
+skk.nvim は blink.cmp <https://github.com/Saghen/blink.cmp> のネイティ
+ブソースとしても動作します。▽/abbrev（見出し語入力中）状態のときだけ、
+前方一致検索の結果をライブ補完候補として出します（個人辞書・ローカル
+辞書・SKKサーバーいずれの実際の変換候補=漢字も対象）。
+
+ソース自体の登録はこのプラグインの外、ユーザー設定側の責務です: >lua
+
+    require("skk").setup({
+      blink = {
+        max_items = 50,
+        skip_skkserv = false,
+        skkserv_candidates = true,
+        skkserv_candidate_limit = 20,
+      },
+    })
+
+    require("blink-cmp").setup({
+      sources = {
+        default = { "skk", "lsp", "path", "snippets", "buffer" },
+        providers = {
+          skk = {
+            name = "skk",
+            module = "skk.blink_source",
+            enabled = function()
+              local phase = require("skk.henkan.state").get_phase()
+              return phase == "midashi" or phase == "abbrev"
+            end,
+          },
+        },
+      },
+    })
+
+    -- ▽/▼ の表示に合わせて blink.cmp のメニューを show()/hide() する。
+    -- show() には必ず providers = { "skk" } を明示すること
+    -- （省略すると2回目以降の show() が無視される）。
+    vim.api.nvim_create_autocmd("User", {
+      pattern = "SkkHenkanChanged",
+      callback = function(ev)
+        local phase = ev.data and ev.data.phase
+        if phase == "midashi" or phase == "abbrev" then
+          vim.schedule(function()
+            require("blink.cmp").show({ providers = { "skk" } })
+          end)
+        else
+          require("blink.cmp").hide()
+        end
+      end,
+    })
+<
+                                                    *skk.nvim-blink-cmp-c-n*
+<C-n>/<C-p> と blink.cmp の競合 ~
+
+blink.cmp が挿入モードに <C-n>/<C-p> の実キーマップをバッファローカル
+・遅延適用で張る構成（`keymap.preset` を使う場合など）では、
+|skk.nvim-opt-candidate_navigation| だけでは不十分な場合があります
+（skk.nvim 側のグローバルなキーマップが、後から張られる blink.cmp の
+バッファローカルなキーマップに上書きされてしまうため）。
+
+その場合は、blink.cmp 自身の keymap 設定にカスタム関数コマンドを追加
+するのが確実です: >lua
+
+    keymap = {
+      preset = "default",
+      ["<C-n>"] = {
+        function()
+          if require("skk.henkan.state").get_phase() == "select" then
+            vim.schedule(function()
+              require("skk.henkan.state").focus_next()
+            end)
+            return true
+          end
+          return false
+        end,
+        "select_next",
+        "fallback_to_mappings",
+      },
+      ["<C-p>"] = {
+        function()
+          if require("skk.henkan.state").get_phase() == "select" then
+            vim.schedule(function()
+              require("skk.henkan.state").focus_prev()
+            end)
+            return true
+          end
+          return false
+        end,
+        "select_prev",
+        "fallback_to_mappings",
+      },
+    },
+<
+henkan が ▼(select) フェーズなら true を返してチェーンを打ち切り、そう
+でなければ false を返して blink.cmp 本来のチェーンに委ねます。
+`vim.schedule()` で包んでいるのは、blink.cmp のキーマップコールバック
+実行中（textlock有効時）に直接ウィンドウ操作を行うと `E565: Not
+allowed to change text or change window` になることがあるためです。
+この場合は setup() 側の `candidate_navigation = { enabled = false }`
+で skk.nvim 本体のキーマップを無効化し、混乱を避けることを推奨します。
+
+実例は https://github.com/nabehan/nvim-skk-sandbox の init.lua も参照
+してください。
+
+==============================================================================
+13. 既知の制限                                        *skk.nvim-limitations*
+
+- 内蔵ターミナル（`t`）には対応しません（方針として非対応と決定）。
+- 送りありの前方一致補完（blink.cmp連携）は現時点で提供していません。
+- 候補を選ぶ前のライブなゴーストテキストプレビューは出せません。
+- `egg_like_newline = false` は `vim.api.nvim_feedkeys()` で <CR> を
+  再注入する方式のため、<CR> に他プラグインのマッピングが被っている
+  環境では想定外の相互作用が起こる可能性があります。
+- 候補選択ウィンドウの表示位置自動切替（上下）は `nvim --headless`
+  （UI未接続）環境ではテストできません（実機での動作確認のみ）。
+- モードラインへのモード表示は未実装です（カーソル位置への一時的な
+  インジケーターのみ）。
+- 他の skkserv 実装（`dbskkd-cdb` 等）は未検証です
+  （yaskkserv2 では動作確認済み）。
+
+詳細は README の「既知の制限」を参照してください（|skk.nvim-links|）。
+
+==============================================================================
+14. リンク                                                  *skk.nvim-links*
+
+skk.nvim リポジトリ (README に内部実装の詳しい記録あり):
+    https://github.com/nabehan/skk.nvim
+
+blink.cmp 統合の検証用サンドボックス:
+    https://github.com/nabehan/nvim-skk-sandbox
+
+参考にしたプロジェクト:
+    https://github.com/vim-skk/skkeleton
+    https://github.com/uga-rosa/skk-learning.nvim
+    https://github.com/yuys13/skk-develop.nvim
+    https://github.com/wachikun/yaskkserv2
+    https://github.com/Saghen/blink.cmp
+
+==============================================================================
+vim:tw=78:ts=8:noet:ft=help:norl:
