@@ -72,6 +72,16 @@ Neovim 専用（Vim 非対応）、denops/外部プロセスに依存しない�
 ```lua
 require("skk").setup({
   enter_key = "<C-j>", -- 半角英数/全角英数 -> ひらがな。henkan 中は <CR> 相当（確定）。省略時 "<C-j>"
+  -- バッファとコマンドラインで別のキーにしたい場合（他プラグインとの競合回避等）は
+  -- enter_key の代わりに、または enter_key と併用して次の2つを指定する：
+  -- buffer_enter_key = "<C-j>", cmdline_enter_key = "<C-j>",
+
+  -- l/q/L・abbrev開始（"/"）の物理キー。他プラグイン（skkeleton等）との共存や
+  -- キーボード配列の都合で変えたい場合に指定する。省略時は現状通り。
+  -- char_key_to_ascii = "l",         -- ひらがな/カタカナ -> 半角英数
+  -- char_key_to_kata_or_hira = "q",  -- ひらがな<->カタカナの相互遷移
+  -- char_key_to_zenei = "L",         -- ひらがな/カタカナ -> 全角英数
+  -- abbrev_key = "/",                -- abbrevモード開始
 
   sticky_shift_enabled = true, -- Sticky-shift の有効/無効。省略時 true
   sticky_shift_key = ";",      -- Sticky-shift のトリガーキー。省略時 ";"（sticky_shift_enabled=false なら無視される）
@@ -109,6 +119,8 @@ require("skk").setup({
 各オプションの詳細（デフォルト値・組み合わせ時の注意点）は `lua/skk/init.lua` の `SkkSetupOpts` の docstring、または `:help skk.nvim-options` を参照。
 
 初期モードは `半角英数`（SKK 実質 OFF）。挿入モードで `<C-j>` を押すとひらがなモードに入る。以降は前述のモード遷移表（`l`/`q`/`L`）でモードを切り替えながら入力する。`:SkkMode` コマンドで現在のモードを確認できる。
+
+他プラグインとの連携用に、`require("skk").enable()`/`disable()`/`toggle()`/`is_enabled()`（skkeleton の `<Plug>(skkeleton-enable)` 等相当）と、対応する `:SkkEnable`/`:SkkDisable`/`:SkkToggle` コマンドも用意している。`enable()` はひらがなモードへ、`disable()` は半角英数モード（henkan進行中なら先にキャンセル）へ遷移する。
 
 辞書を使う（`▽`/`▼` 変換）には、`setup()` とは別に辞書を読み込んで登録する必要がある。SKK-JISYO.L や .LL のような大きな辞書ファイルは `load_dictionary_async()`（非同期・遅延パース）を推奨する:
 

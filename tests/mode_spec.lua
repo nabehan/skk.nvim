@@ -74,3 +74,74 @@ describe("mode.label", function()
     assert.are.equal("全角英数", mode_util.label("zenei"))
   end)
 end)
+
+-- 【実機からの要望・再発防止】l/q/L・<C-j> それぞれの物理キーを、
+-- 他プラグイン（skkeleton 等）との共存を考慮してユーザーが差し替え
+-- られるようにした（lua/skk/init.lua の setup() オプション経由）。
+-- set_char_keys()/set_ctrl_keys() はテスト間の状態が残らないよう、
+-- 各 it() の最後に必ずデフォルトへ戻す。
+describe("mode.set_char_keys（l/q/L の物理キーの差し替え）", function()
+  after_each(function()
+    mode_util.set_char_keys() -- デフォルト（l/q/L）に戻す
+  end)
+
+  it("差し替えたキーで遷移が効き、デフォルトのl/q/Lはもう効かなくなる", function()
+    mode_util.set_char_keys({ to_ascii = "j", to_kata_or_hira = "k", to_zenei = "h" })
+
+    assert.are.equal("ascii", mode_util.char_transition("j", "hira"))
+    assert.are.equal("kata", mode_util.char_transition("k", "hira"))
+    assert.are.equal("zenei", mode_util.char_transition("h", "hira"))
+
+    assert.is_nil(mode_util.char_transition("l", "hira"))
+    assert.is_nil(mode_util.char_transition("q", "hira"))
+    assert.is_nil(mode_util.char_transition("L", "hira"))
+  end)
+
+  it("一部だけ差し替えても、残りはデフォルトのまま使える", function()
+    mode_util.set_char_keys({ to_ascii = "j" })
+
+    assert.are.equal("ascii", mode_util.char_transition("j", "hira"))
+    assert.are.equal("kata", mode_util.char_transition("q", "hira")) -- デフォルトのまま
+    assert.are.equal("zenei", mode_util.char_transition("L", "hira")) -- デフォルトのまま
+    assert.is_nil(mode_util.char_transition("l", "hira")) -- 差し替えられて消えている
+  end)
+
+  it("引数無しで呼ぶとデフォルト（l/q/L）に戻る", function()
+    mode_util.set_char_keys({ to_ascii = "j" })
+    mode_util.set_char_keys()
+
+    assert.are.equal("ascii", mode_util.char_transition("l", "hira"))
+    assert.is_nil(mode_util.char_transition("j", "hira"))
+  end)
+end)
+
+describe("mode.set_ctrl_keys（<C-j> 相当の物理キーの差し替え）", function()
+  after_each(function()
+    mode_util.set_ctrl_keys() -- デフォルト（<C-j>）に戻す
+  end)
+
+  it(
+    "複数キーを同時に有効化できる（バッファ用・コマンドライン用で異なる enter_key を想定）",
+    function()
+      mode_util.set_ctrl_keys({ "<C-j>", "<C-CR>" })
+
+      assert.are.equal("hira", mode_util.ctrl_transition("<C-j>", "ascii"))
+      assert.are.equal("hira", mode_util.ctrl_transition("<C-CR>", "ascii"))
+    end
+  )
+
+  it("差し替えると、デフォルトの<C-j>だけを渡さない限りもう効かない", function()
+    mode_util.set_ctrl_keys({ "<C-CR>" })
+
+    assert.is_nil(mode_util.ctrl_transition("<C-j>", "ascii"))
+    assert.are.equal("hira", mode_util.ctrl_transition("<C-CR>", "ascii"))
+  end)
+
+  it("引数無しで呼ぶとデフォルト（<C-j>のみ）に戻る", function()
+    mode_util.set_ctrl_keys({ "<C-CR>" })
+    mode_util.set_ctrl_keys()
+
+    assert.are.equal("hira", mode_util.ctrl_transition("<C-j>", "ascii"))
+    assert.is_nil(mode_util.ctrl_transition("<C-CR>", "ascii"))
+  end)
+end)

@@ -68,3 +68,31 @@ describe("capture.transition() とモードインジケーターの統合", func
     assert.is_nil(mode_indicator._current_glyph())
   end)
 end)
+
+-- 【実機からの要望・再発防止】skk.enable()/disable()/toggle()（skkeleton の
+-- <Plug>(skkeleton-enable) 等相当、他プラグイン連携のためのAPI）の土台と
+-- なる capture.set_mode() のテスト。l/q/L・enter_key の遷移テーブルを
+-- 経由せず、モードを直接指定して切り替える。
+describe("capture.set_mode()", function()
+  before_each(function()
+    mode_indicator.hide()
+  end)
+
+  it("指定したモードに直接遷移し、インジケーターも表示される", function()
+    capture.set_mode("hira")
+    assert.are.equal("hira", capture.get_mode())
+    assert.are.equal("ひら", mode_indicator._current_glyph())
+
+    capture.set_mode("ascii")
+    assert.are.equal("ascii", capture.get_mode())
+    assert.are.equal("latn", mode_indicator._current_glyph())
+  end)
+
+  it("l/q/L や <C-j> の遷移テーブルに定義が無い組み合わせでも直接遷移できる", function()
+    -- 例: ascii -> kata は l/q/L・<C-j> のどちらの遷移表にも無いが、
+    -- set_mode() は遷移表を経由しないので直接切り替えられる。
+    capture.set_mode("ascii")
+    capture.set_mode("kata")
+    assert.are.equal("kata", capture.get_mode())
+  end)
+end)

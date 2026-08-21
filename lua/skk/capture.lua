@@ -82,6 +82,13 @@ local config = {
   sticky_shift_enabled = true,
   sticky_shift_key = ";",
   egg_like_newline = true,
+  -- l/q/L・abbrev開始（"/"）の物理キー。他プラグイン（skkeleton等）との
+  -- 共存や、キーボード配列の都合で変えたい場合を考慮して設定可能にした
+  -- （実機からの要望）。デフォルトはこれまで通り。
+  char_key_to_ascii = "l",
+  char_key_to_kata_or_hira = "q",
+  char_key_to_zenei = "L",
+  abbrev_key = "/",
   -- コマンドラインモードに入った瞬間の入力モード。バッファ側で直前に
   -- 何のモードを使っていたかに関わらず、常にこの値から始める（バッファの
   -- モードとコマンドラインのモードは独立に管理する。下記の
@@ -433,7 +440,7 @@ local function reprocess_direct_key(key)
     return
   end
 
-  if context.buffer == "" and key == "/" then
+  if context.buffer == "" and key == config.abbrev_key then
     -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
     henkan_state.start_abbrev(context.mode)
     return
@@ -537,7 +544,7 @@ local function on_key(key, _typed)
     return ""
   end
 
-  if context.buffer == "" and key == "/" then
+  if context.buffer == "" and key == config.abbrev_key then
     -- abbrev モード開始（ASCII文字列そのものを見出しにする変換）。
     henkan_state.start_abbrev(context.mode)
     return ""
@@ -648,13 +655,25 @@ function M.get_mode()
   return context.mode
 end
 
+--- モードを直接指定して切り替える。l/q/L・<C-j> 相当のキー入力を経由せず、
+--- 外部（M.enable()/M.disable()/M.toggle()、あるいは他プラグインからの
+--- 直接呼び出し）から強制的にモードを変更したい場合に使う。
+--- M.transition()/l/q/L による遷移と同様、未確定のローマ字断片は破棄し、
+--- モードインジケーターを表示する。
+---@param mode SkkMode
+function M.set_mode(mode)
+  context.mode = mode
+  context.buffer = ""
+  mode_indicator.show(mode)
+end
+
 ---@return string
 function M.mode_label()
   return mode_util.label(context.mode)
 end
 
 --- vim.on_key() のリスナーを登録する。init 時に一度だけ呼ぶ。
----@param opts { sticky_shift_enabled: boolean?, sticky_shift_key: string?, egg_like_newline: boolean? }|nil
+---@param opts { sticky_shift_enabled: boolean?, sticky_shift_key: string?, egg_like_newline: boolean?, char_key_to_ascii: string?, char_key_to_kata_or_hira: string?, char_key_to_zenei: string?, abbrev_key: string?, ctrl_keys: string[]? }|nil
 function M.setup(opts)
   opts = opts or {}
   if opts.sticky_shift_enabled ~= nil then
@@ -666,6 +685,31 @@ function M.setup(opts)
   if opts.egg_like_newline ~= nil then
     config.egg_like_newline = opts.egg_like_newline
   end
+  if opts.char_key_to_ascii ~= nil then
+    config.char_key_to_ascii = opts.char_key_to_ascii
+  end
+  if opts.char_key_to_kata_or_hira ~= nil then
+    config.char_key_to_kata_or_hira = opts.char_key_to_kata_or_hira
+  end
+  if opts.char_key_to_zenei ~= nil then
+    config.char_key_to_zenei = opts.char_key_to_zenei
+  end
+  if opts.abbrev_key ~= nil then
+    config.abbrev_key = opts.abbrev_key
+  end
+
+  -- 【重要】l/q/L・<C-j>相当（ctrl_keys）の物理キー割り当てを、mode.lua
+  -- （vim.* 非依存の純粋ロジック層）側にも反映する。config テーブルを
+  -- 唯一の正とし、setup() を呼ぶたびに（このキーに関するオプションが
+  -- 今回渡されたかどうかに関わらず）常に作り直す。lua/skk/init.lua は
+  -- ctrl_keys（バッファ用・コマンドライン用のenter_keyをまとめた配列。
+  -- 両者が同じキーなら1件だけになる）をここに渡す。
+  mode_util.set_char_keys({
+    to_ascii = config.char_key_to_ascii,
+    to_kata_or_hira = config.char_key_to_kata_or_hira,
+    to_zenei = config.char_key_to_zenei,
+  })
+  mode_util.set_ctrl_keys(opts.ctrl_keys)
 
   -- 物理 <BS> キーが termcap 経由の特殊な内部キーコードとして届く環境が
   -- あるため、Neovim 自身に問い合わせて実際の表現を取得しておく。

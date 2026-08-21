@@ -21,6 +21,22 @@ local last_skkserv_opts = nil
 
 ---@class SkkSetupOpts
 ---@field enter_key string? 半角英数/全角英数 -> ひらがな。henkan 中は確定。デフォルト "<C-j>"
+---  buffer_enter_key/cmdline_enter_key を省略した場合の既定値としても使われる
+---  （バッファ・コマンドラインどちらも変えなくてよい場合はこれだけ指定すればよい）。
+---@field buffer_enter_key string? 通常バッファでの enter_key。省略時は enter_key の値
+---  （さらに省略時 "<C-j>"）。他プラグイン（skkeleton 等）と揃えたい・キーが競合する
+---  場合等、バッファとコマンドラインで別のキーにしたいときに指定する。
+---@field cmdline_enter_key string? コマンドラインモードでの enter_key。省略時は
+---  enter_key の値（さらに省略時 "<C-j>"）。
+---@field char_key_to_ascii string? ひらがな/カタカナ -> 半角英数。デフォルト "l"。
+---@field char_key_to_kata_or_hira string? ひらがな<->カタカナの相互遷移。デフォルト "q"。
+---@field char_key_to_zenei string? ひらがな/カタカナ -> 全角英数。デフォルト "L"。
+---  この3つは l/q/L と同様、未確定のローマ字バッファが空のときに限り
+---  モード切替キーとして扱われる（バッファが空でなければ通常のローマ字/
+---  全角変換入力として処理される。全角英数モードでは常にモード切替
+---  キーとしては扱われず、そのまま全角文字に変換される）。
+---@field abbrev_key string? abbrevモード（ASCII文字列そのものを見出しにする変換）を
+---  開始するキー。デフォルト "/"。
 ---@field sticky_shift_enabled boolean? Sticky-shift（大文字キーを使わずに ▽開始・送り開始点を
 ---  指示する操作）の有効/無効。デフォルト true。
 ---@field sticky_shift_key string? Sticky-shift のトリガーキー。デフォルト ";"。
@@ -200,10 +216,67 @@ local function check_skkserv_connection(silent_on_success)
   )
 end
 
+-- 【実機からの要望】他プラグインとの連携（外部から SKK の有効/無効を
+-- 制御したい場合）を見込んで、skkeleton の <Plug>(skkeleton-enable) 等に
+-- 相当する API を用意する。skk.nvim には skkeleton のような「本体ごと
+-- 無効化する」独立したON/OFFスイッチは無く、代わりに ascii モード
+-- （キー入力を完全パススルーする、"SKKが事実上OFF"の状態）がその役割を
+-- 果たす設計になっている。そのため:
+--   enable()  = ひらがなモードへ遷移する（enter_key相当。skkeleton-enable）
+--   disable() = 半角英数モードへ遷移する。henkanが進行中なら先に
+--               キャンセルする（skkeleton-disable。中途半端な▽/▼状態の
+--               まま無効化しない）
+--   toggle()  = 現在 ascii モードなら enable()、それ以外なら disable()
+--               （skkeleton-toggle）
+-- capture.set_mode() を使い、l/q/L・enter_key の遷移テーブル定義とは
+-- 独立に、直接モードを指定して切り替える。
+
+--- ひらがなモードへ遷移する（skkeleton の <Plug>(skkeleton-enable) 相当）。
+function M.enable()
+  capture.set_mode("hira")
+  vim.notify("skk.nvim: " .. capture.mode_label())
+end
+
+--- 半角英数モードへ遷移する（skkeleton の <Plug>(skkeleton-disable) 相当）。
+--- henkan（▽/▼）が進行中であれば、中途半端な状態を残さないよう先に
+--- キャンセルする。
+function M.disable()
+  if henkan_state.is_active() then
+    henkan_state.cancel()
+  end
+  capture.set_mode("ascii")
+  vim.notify("skk.nvim: " .. capture.mode_label())
+end
+
+--- 現在 ascii モード（SKKが事実上OFFの状態）なら M.enable()、そうでなければ
+--- M.disable() を呼ぶ（skkeleton の <Plug>(skkeleton-toggle) 相当）。
+function M.toggle()
+  if capture.get_mode() == "ascii" then
+    M.enable()
+  else
+    M.disable()
+  end
+end
+
+--- 現在 ascii モード（SKKが事実上OFFの状態）でなければ true を返す。
+--- 他プラグインが現在の有効/無効状態を問い合わせたい場合向け。
+---@return boolean
+function M.is_enabled()
+  return capture.get_mode() ~= "ascii"
+end
+
 ---@param opts SkkSetupOpts|nil
 function M.setup(opts)
   opts = opts or {}
-  local enter_key = opts.enter_key or "<C-j>"
+  local default_enter_key = opts.enter_key or "<C-j>"
+  local buffer_enter_key = opts.buffer_enter_key or default_enter_key
+  local cmdline_enter_key = opts.cmdline_enter_key or default_enter_key
+  -- mode.lua に登録する制御キーの一覧（重複は除く）。バッファ用・
+  -- コマンドライン用が同じキーなら1件だけになる。
+  local ctrl_keys = { buffer_enter_key }
+  if cmdline_enter_key ~= buffer_enter_key then
+    table.insert(ctrl_keys, cmdline_enter_key)
+  end
   local user_dictionary = opts.user_dictionary or vim.fn.expand("~/.local/share/skk/SKK-JISYO.user")
 
   setup_highlights(opts)
@@ -211,6 +284,11 @@ function M.setup(opts)
     sticky_shift_enabled = opts.sticky_shift_enabled,
     sticky_shift_key = opts.sticky_shift_key,
     egg_like_newline = opts.egg_like_newline,
+    char_key_to_ascii = opts.char_key_to_ascii,
+    char_key_to_kata_or_hira = opts.char_key_to_kata_or_hira,
+    char_key_to_zenei = opts.char_key_to_zenei,
+    abbrev_key = opts.abbrev_key,
+    ctrl_keys = ctrl_keys,
   })
   candidate_window.setup(opts.candidate_window or {})
   henkan_state.setup({
@@ -323,22 +401,47 @@ function M.setup(opts)
     setup_candidate_nav_key(candidate_nav_opts.prev_key or "<C-p>", henkan_state.focus_prev)
   end
 
-  vim.keymap.set({ "i", "c" }, enter_key, function()
-    -- henkan (▽/▼) がアクティブな間は、<C-j> も <CR> と同じ「確定」として扱う。
-    -- （現時点では henkan はバッファ限定なので、コマンドラインでは常に
-    -- capture.transition() 側のモード切替のみが働く）
-    if henkan_state.is_active() then
-      henkan_state.confirm()
-      return
+  -- enter_key（henkan中の確定 / ascii・zenei -> hira への遷移）。バッファと
+  -- コマンドラインで別キーを設定できるよう、2つに分けて登録する
+  -- （buffer_enter_key/cmdline_enter_key が同じキーの場合も、単に同じ
+  -- キーへ2回登録されるだけで害はない）。henkan (▽/▼) は現在バッファ・
+  -- コマンドラインどちらでもアクティブになりうるので、どちらの登録でも
+  -- 同じ判定（henkan中なら確定、そうでなければモード遷移）を行う。
+  ---@param key string
+  local function make_enter_key_handler(key)
+    return function()
+      if henkan_state.is_active() then
+        henkan_state.confirm()
+        return
+      end
+      if capture.transition(key) then
+        notify_mode()
+      end
     end
-    if capture.transition(enter_key) then
-      notify_mode()
-    end
-  end, { desc = "skk.nvim: enter hiragana mode / confirm henkan" })
+  end
+
+  vim.keymap.set("i", buffer_enter_key, make_enter_key_handler(buffer_enter_key), {
+    desc = "skk.nvim: enter hiragana mode / confirm henkan (buffer)",
+  })
+  vim.keymap.set("c", cmdline_enter_key, make_enter_key_handler(cmdline_enter_key), {
+    desc = "skk.nvim: enter hiragana mode / confirm henkan (cmdline)",
+  })
 
   vim.api.nvim_create_user_command("SkkMode", function()
     notify_mode()
   end, {})
+
+  vim.api.nvim_create_user_command("SkkEnable", function()
+    M.enable()
+  end, { desc = "skk.nvim: ひらがなモードへ遷移する" })
+
+  vim.api.nvim_create_user_command("SkkDisable", function()
+    M.disable()
+  end, { desc = "skk.nvim: 半角英数モードへ遷移する（henkan中なら先にキャンセル）" })
+
+  vim.api.nvim_create_user_command("SkkToggle", function()
+    M.toggle()
+  end, { desc = "skk.nvim: 現在asciiモードならSkkEnable、そうでなければSkkDisable相当" })
 
   vim.api.nvim_create_user_command("SkkCheckSkkserv", function()
     if not last_skkserv_opts then

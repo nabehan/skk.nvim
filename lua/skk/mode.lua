@@ -16,20 +16,60 @@ M.LABELS = {
 
 -- l/q/L による印字可能キーでのモード切替（未確定バッファが空のときのみ有効。
 -- 呼び出し側 (capture.lua) が判定する）。
+-- キー自体は set_char_keys() で差し替え可能（デフォルトは l/q/L）。
+-- 遷移の意味（物理キーとは独立）:
+--   to_ascii         ひらがな/カタカナ -> 半角英数
+--   to_kata_or_hira  ひらがな -> カタカナ / カタカナ -> ひらがな（相互遷移）
+--   to_zenei         ひらがな/カタカナ -> 全角英数
+---@type table<string, table<SkkMode, SkkMode>>
+local CHAR_TRANSITION_RULES = {
+  to_ascii = { hira = "ascii", kata = "ascii" },
+  to_kata_or_hira = { hira = "kata", kata = "hira" },
+  to_zenei = { hira = "zenei", kata = "zenei" },
+}
+
 ---@type table<string, table<SkkMode, SkkMode>>
 M.CHAR_TRANSITIONS = {
-  l = { hira = "ascii", kata = "ascii" },
-  q = { hira = "kata", kata = "hira" },
-  L = { hira = "zenei", kata = "zenei" },
+  l = CHAR_TRANSITION_RULES.to_ascii,
+  q = CHAR_TRANSITION_RULES.to_kata_or_hira,
+  L = CHAR_TRANSITION_RULES.to_zenei,
 }
+
+--- l/q/L に割り当てる物理キーを差し替える（lua/skk/init.lua の setup() から
+--- capture.lua 経由で呼ばれる）。省略した項目はデフォルト（l/q/L）を使う。
+---@param keys { to_ascii: string?, to_kata_or_hira: string?, to_zenei: string? }|nil
+function M.set_char_keys(keys)
+  keys = keys or {}
+  -- 前回のキー割り当てが残らないよう、毎回作り直す。
+  M.CHAR_TRANSITIONS = {
+    [keys.to_ascii or "l"] = CHAR_TRANSITION_RULES.to_ascii,
+    [keys.to_kata_or_hira or "q"] = CHAR_TRANSITION_RULES.to_kata_or_hira,
+    [keys.to_zenei or "L"] = CHAR_TRANSITION_RULES.to_zenei,
+  }
+end
 
 -- <C-j> による制御キーでのモード切替。
 -- （半角カナモード検討時は <C-q> も使っていたが、半角カナは実装しない
 --  方針としたため、制御キーによる遷移は <C-j> のみになった）
+-- 複数キーを同時に有効にできる（バッファ用とコマンドライン用で異なる
+-- enter_key を設定した場合、両方をここに登録する。set_ctrl_keys() 参照）。
 ---@type table<string, table<SkkMode, SkkMode>>
-M.CTRL_TRANSITIONS = {
-  ["<C-j>"] = { ascii = "hira", zenei = "hira" },
-}
+local CTRL_TRANSITION_RULE = { ascii = "hira", zenei = "hira" }
+
+---@type table<string, table<SkkMode, SkkMode>>
+M.CTRL_TRANSITIONS = { ["<C-j>"] = CTRL_TRANSITION_RULE }
+
+--- 制御キー（enter_key 相当）でのモード遷移（ascii/zenei -> hira）に割り当てる
+--- 物理キーを差し替える。バッファ用・コマンドライン用に異なるキーを設定した
+--- 場合等、複数キーをまとめて有効にできる。
+---@param keys string[]|nil 省略時は ["<C-j>"]
+function M.set_ctrl_keys(keys)
+  keys = keys or { "<C-j>" }
+  M.CTRL_TRANSITIONS = {}
+  for _, key in ipairs(keys) do
+    M.CTRL_TRANSITIONS[key] = CTRL_TRANSITION_RULE
+  end
+end
 
 ---@param transitions table<string, table<SkkMode, SkkMode>>
 ---@param key string
