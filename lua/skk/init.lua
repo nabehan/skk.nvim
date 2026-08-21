@@ -76,15 +76,21 @@ local last_skkserv_opts = nil
 ---  文字コード。伝統的な skkserv は EUC-JP が主流）。timeout_ms は1回の検索の待ち時間上限
 ---  （省略時 300）。debug は送受信の生データを vim.notify() で出力するか（省略時 false）。
 ---  個人辞書の次、ローカル辞書より先にマージされる。
----  check_connection: true（既定）だと、setup() 完了後（起動直後のイベントループの混雑を
+---  check_connection: false（既定）だと起動時の自動疎通確認を行わない。
+---  true にすると、setup() 完了後（起動直後のイベントループの混雑を
 ---  避けるため少し遅らせてから、vim.defer_fn 越しに実行。setup() 自体は従来通り
 ---  ネットワークI/Oを行わない）に一度だけ疎通確認を行い、接続できなければ
 ---  vim.notify()（WARN）で host:port・status・エラー詳細を知らせる（正常なら何も表示しない）。
 ---  1回失敗しても即座に警告は出さず、少し待ってもう1回だけ試してから最終判断する
 ---  （大きな辞書ファイルの読み込み中等、健全な接続でも一過性に間に合わないことがあるため）。
----  false にすると疎通確認自体を行わない。手動で再確認したい場合は :SkkCheckSkkserv コマンドも使える。
+---  【実機で発見】この自動疎通確認は vim.defer_fn 越し・ネットワークI/Oも非同期なので、
+---  Neovim自体の起動完了（インタラクティブになるまでの時間）を直接ブロックすることは無い。
+---  ただし失敗時の再試行等でしばらく裏でイベントループを回し続けるため、体感の"落ち着くまでの
+---  時間"が気になる場合や、接続が安定していて手動確認（:SkkCheckSkkserv）で十分な場合は
+---  既定の false のままにしておくとよい。
 ---  check_connection_timeout_ms: この疎通確認1回あたりのタイムアウト（省略時 2000。通常の
----  検索が使う timeout_ms とは別。起動直後は余裕を持たせている）。
+---  検索が使う timeout_ms とは別。起動直後は余裕を持たせている）。check_connection=false
+---  のときは意味を持たない。
 ---@field blink { max_items: integer?, skip_skkserv: boolean?, skkserv_candidates: boolean?, skkserv_candidate_limit: integer?, debug_timing: boolean? }?
 ---  blink.cmp ネイティブソース（lua/skk/blink_source.lua）の設定。`▽`/`▼` 見出し語入力中の
 ---  前方一致ライブ補完（実際の変換候補=漢字まで表示する。Phase 2）で使う。
@@ -216,7 +222,7 @@ function M.setup(opts)
     last_skkserv_opts = opts.skkserv
     local check_connection = opts.skkserv.check_connection
     if check_connection == nil then
-      check_connection = true
+      check_connection = false
     end
     if check_connection then
       -- setup() 自体はネットワークI/Oを行わない設計（dict/skkserv.lua の
@@ -341,6 +347,31 @@ function M.setup(opts)
     end
     check_skkserv_connection(false)
   end, { desc = "skk.nvim: SKKサーバーへの疎通確認を手動で実行する" })
+
+  vim.api.nvim_create_user_command("SkkDictionaries", function()
+    local loaded = dict.loaded_dictionaries()
+    if #loaded == 0 then
+      vim.notify(
+        "skk.nvim: 読み込まれたローカル辞書はありません（setup({ dictionaries = {...} }) 等を参照）"
+      )
+      return
+    end
+    local lines = {}
+    for _, info in ipairs(loaded) do
+      local label = info.path or info.name
+      if info.ok then
+        table.insert(
+          lines,
+          string.format("[%s] OK   %s%s", info.loaded_at, label, info.encoding and (" (" .. info.encoding .. ")") or "")
+        )
+      else
+        table.insert(lines, string.format("[%s] FAIL %s: %s", info.loaded_at, label, tostring(info.err)))
+      end
+    end
+    vim.notify("skk.nvim: 読み込み済みのローカル辞書\n" .. table.concat(lines, "\n"))
+  end, {
+    desc = "skk.nvim: setup({ dictionaries = {...} }) 等で読み込んだローカル辞書の一覧を表示する",
+  })
 end
 
 return M

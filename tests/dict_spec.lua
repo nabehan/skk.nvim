@@ -216,6 +216,40 @@ describe("dict.load_dictionary_async（遅延パース）", function()
     assert.is_not_nil(err_result)
   end)
 
+  it("M.loaded_dictionaries() に読み込み結果（成功・失敗とも）が記録される", function()
+    dict.clear_dicts() -- 他テストの記録を持ち越さない
+
+    local done = false
+    dict.load_dictionary_async(tmp_path, "utf-8", function()
+      done = true
+    end)
+    vim.wait(2000, function()
+      return done
+    end)
+
+    local loaded = dict.loaded_dictionaries()
+    assert.are.equal(1, #loaded)
+    assert.are.equal(tmp_path, loaded[1].path)
+    assert.are.equal("utf-8", loaded[1].encoding)
+    assert.is_true(loaded[1].ok)
+    assert.is_not_nil(loaded[1].loaded_at)
+
+    -- 失敗した読み込みも記録される（失敗時は既存ソースを置き換えない
+    -- ため、成功時の記録は消えず、失敗の記録が追加される）。
+    done = false
+    dict.load_dictionary_async("/tmp/skk_nvim_test_does_not_exist.txt", "utf-8", function()
+      done = true
+    end)
+    vim.wait(2000, function()
+      return done
+    end)
+
+    loaded = dict.loaded_dictionaries()
+    assert.are.equal(2, #loaded)
+    assert.is_false(loaded[2].ok)
+    assert.is_not_nil(loaded[2].err)
+  end)
+
   it("非同期で読み込んだ辞書も、個人辞書とのマージが機能する", function()
     local user_tmp = vim.fn.tempname()
     dict.set_user_dict_path(user_tmp)
@@ -282,6 +316,29 @@ describe("dict.add_dictionary_async（複数辞書を非同期で追加）", fun
     assert.are.equal("幹事", candidates[2].word)
     assert.are.equal("監事", candidates[3].word)
     assert.are.equal("慣事", candidates[4].word)
+  end)
+
+  it("M.loaded_dictionaries() に、呼んだ順（name付き）で記録される", function()
+    local done_a, done_b = false, false
+    dict.add_dictionary_async(tmp_path_a, "utf-8", function()
+      done_a = true
+    end, nil, "a")
+    dict.add_dictionary_async(tmp_path_b, "utf-8", function()
+      done_b = true
+    end, nil, "b")
+
+    vim.wait(2000, function()
+      return done_a and done_b
+    end)
+
+    local loaded = dict.loaded_dictionaries()
+    assert.are.equal(2, #loaded)
+    assert.are.equal("a", loaded[1].name)
+    assert.are.equal(tmp_path_a, loaded[1].path)
+    assert.is_true(loaded[1].ok)
+    assert.are.equal("b", loaded[2].name)
+    assert.are.equal(tmp_path_b, loaded[2].path)
+    assert.is_true(loaded[2].ok)
   end)
 
   it("load_dictionary_async と add_dictionary_async を混ぜても、load の方が全て置き換える", function()

@@ -312,7 +312,8 @@ skkserv ~
         debug                         送受信の生データを vim.notify()
                                       で出力するか。デフォルト false
         check_connection              setup() 完了後に一度だけ疎通確認
-                                      を行うか。デフォルト true
+                                      を行うか。デフォルト false
+                                      （手動確認は |:SkkCheckSkkserv|）
         check_connection_timeout_ms   疎通確認1回あたりのタイムアウト。
                                       デフォルト 2000
 
@@ -381,10 +382,19 @@ setup() の例: >lua
                                                         *:SkkCheckSkkserv*
 :SkkCheckSkkserv
     SKKサーバーへの疎通確認を手動で実行する。setup() の
-    `skkserv.check_connection`（既定 true）による自動チェックとは別
+    `skkserv.check_connection`（既定 false）による自動チェックとは別
     に、いつでも再確認したいときに使う。成功時はバージョン文字列を、
     失敗時は host:port・status・エラー詳細を vim.notify() で表示する。
     `skkserv` を設定していない場合は何もしない。
+
+                                                        *:SkkDictionaries*
+:SkkDictionaries
+    setup() の `dictionaries`、または `require("skk.dict")` の
+    `load_dictionary_async()`/`add_dictionary_async()`/`set_dict()`/
+    `add_dict()` で読み込まれたローカル辞書の一覧（読み込み時刻・
+    成功/失敗・エラー内容）を vim.notify() で表示する。個人辞書や
+    SKKサーバーは対象外（個人辞書は `user_dictionary` オプションの
+    パスで固定、SKKサーバーの疎通は |:SkkCheckSkkserv| 参照）。
 
 ==============================================================================
 11. ハイライトグループ                                *skk.nvim-highlights*

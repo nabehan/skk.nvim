@@ -26,6 +26,43 @@ local M = {}
 ---@type SkkDictSourceHandle[]
 local sources = {}
 
+---@class SkkLoadedDictionaryInfo
+---@field name string
+---@field path string|nil M.set_dict()/M.add_dict() 経由（パース済みデータを直接渡す）の
+---  場合は nil。
+---@field encoding string|nil
+---@field ok boolean
+---@field err string|nil ok=false のときのエラー内容
+---@field loaded_at string os.date() による人間が読める時刻文字列
+
+--- 【実機で発見・実装】nvim-skk-sandbox の init.lua が on_dictionary_loaded
+--- コールバックで vim.notify() していた「読み込んだ辞書の一覧表示」を、
+--- skk.nvim 本体側でも後から問い合わせられるようにする（:SkkDictionaries
+--- コマンド参照）。setup() 起動時に毎回 vim.notify() で表示するのは
+--- 起動直後のメッセージが煩雑になる／体感の起動負荷が気になるという
+--- 声があったため、既定では何も表示せず、必要なときにコマンドで
+--- 確認する方式にしてある。
+---@type SkkLoadedDictionaryInfo[]
+local loaded_dictionaries = {}
+
+---@param info SkkLoadedDictionaryInfo
+local function record_loaded_dictionary(info)
+  info.loaded_at = os.date("%H:%M:%S")
+  table.insert(loaded_dictionaries, info)
+end
+
+--- 現在までに読み込まれたローカル辞書ソースの一覧を返す（登録順）。
+--- :SkkDictionaries コマンド、および利用者が独自にステータス表示したい
+--- 場合向けの読み取り専用API。返り値は呼び出し時点のコピー。
+---@return SkkLoadedDictionaryInfo[]
+function M.loaded_dictionaries()
+  local copy = {}
+  for i, info in ipairs(loaded_dictionaries) do
+    copy[i] = info
+  end
+  return copy
+end
+
 --- 既にパース済みの辞書データ（jisyo_parser.parse() の戻り値）をそのまま
 --- 検索するソースを作る。
 ---@param name string
@@ -90,9 +127,10 @@ local function make_raw_index_source(name, index)
 end
 
 --- 登録済みのローカル辞書ソースをすべて削除する（個人辞書・SKKサーバーの
---- 設定はそのまま維持される）。
+--- 設定はそのまま維持される）。M.loaded_dictionaries() の記録もリセットする。
 function M.clear_dicts()
   sources = {}
+  loaded_dictionaries = {}
 end
 
 --- パース済みの辞書データを、唯一のローカル辞書ソースとして登録する
@@ -101,6 +139,8 @@ end
 ---@param dict table
 function M.set_dict(dict)
   sources = { make_eager_source("main", dict) }
+  loaded_dictionaries = {}
+  record_loaded_dictionary({ name = "main", path = nil, encoding = nil, ok = true, err = nil })
 end
 
 --- パース済みの辞書データを、既存のソースに追加する形で登録する
@@ -108,7 +148,9 @@ end
 ---@param dict table
 ---@param name string|nil ソース名（省略時は自動採番）
 function M.add_dict(dict, name)
-  table.insert(sources, make_eager_source(name or ("dict" .. (#sources + 1)), dict))
+  local source_name = name or ("dict" .. (#sources + 1))
+  table.insert(sources, make_eager_source(source_name, dict))
+  record_loaded_dictionary({ name = source_name, path = nil, encoding = nil, ok = true, err = nil })
 end
 
 ---@return boolean
@@ -158,10 +200,16 @@ end
 function M.load_dictionary_async(path, file_encoding, on_done, time_budget_ms)
   load_index_async(path, file_encoding, time_budget_ms, function(index)
     sources = { make_raw_index_source("main", index) }
+    -- sources を丸ごと置き換えるのに合わせて、追跡リストも1件だけにする
+    -- （失敗時は sources が変わらない＝旧ソースがまだ生きているので、
+    -- 下の失敗コールバックでは reset しない）。
+    loaded_dictionaries = {}
+    record_loaded_dictionary({ name = "main", path = path, encoding = file_encoding, ok = true, err = nil })
     if on_done then
       on_done(true, nil)
     end
   end, function(err)
+    record_loaded_dictionary({ name = "main", path = path, encoding = file_encoding, ok = false, err = err })
     if on_done then
       on_done(false, err)
     end
@@ -199,11 +247,13 @@ function M.add_dictionary_async(path, file_encoding, on_done, time_budget_ms, na
     -- 読み込み中に他のソースが増減していても、確保しておいた位置に
     -- そのまま差し替える（優先順位を維持する）。
     sources[slot_index] = make_raw_index_source(source_name, index)
+    record_loaded_dictionary({ name = source_name, path = path, encoding = file_encoding, ok = true, err = nil })
     if on_done then
       on_done(true, nil)
     end
   end, function(err)
     -- 失敗時はプレースホルダ（常に空を返す）のままにしておく。
+    record_loaded_dictionary({ name = source_name, path = path, encoding = file_encoding, ok = false, err = err })
     if on_done then
       on_done(false, err)
     end
