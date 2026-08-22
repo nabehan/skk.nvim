@@ -10,6 +10,7 @@ local capture = require("skk.capture")
 local henkan_state = require("skk.henkan.state")
 local candidate_window = require("skk.henkan.candidate_window")
 local candidate_nav = require("skk.candidate_nav")
+local mode_indicator = require("skk.mode_indicator")
 local dict = require("skk.dict")
 
 local M = {}
@@ -83,6 +84,10 @@ local last_skkserv_opts = nil
 ---  SkkHenkanCandidate）。候補一覧ウィンドウの選択中の行のハイライトにも同じグループが
 ---  使われるため、両方に効く。省略時はカラースキームの IncSearch のまま（＝現状と同じ）。
 ---@field candidate_bg string? 同上の背景色。省略時は現状と同じ。
+---@field indicator_fg string? モード切替時にカーソル位置へ一瞬表示するインジケーター
+---  （ひら/カタ/latn/ＬＡ、mode_indicator.lua）の文字色（ハイライトグループ
+---  SkkModeIndicator）。省略時はカラースキームの NormalFloat のまま（＝現状と同じ）。
+---@field indicator_bg string? 同上の背景色。省略時は現状と同じ。
 ---@field user_dictionary string? 個人辞書（学習結果）ファイルのパス。文字コードは常にUTF-8固定
 ---  （skkeleton の userDictionary の慣習に合わせている）。ファイルが無ければ自動的に作られる。
 ---  デフォルト "~/.local/share/skk/SKK-JISYO.user"（skkeleton と同じ慣習のパス）。
@@ -291,6 +296,7 @@ function M.setup(opts)
     ctrl_keys = ctrl_keys,
   })
   candidate_window.setup(opts.candidate_window or {})
+  mode_indicator.setup({ fg = opts.indicator_fg, bg = opts.indicator_bg })
   henkan_state.setup({
     candidate_window_threshold = opts.candidate_window and opts.candidate_window.threshold or nil,
   })

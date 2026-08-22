@@ -293,6 +293,16 @@ candidate_fg ~
 candidate_bg ~
     同上の背景色。
 
+                                               *skk.nvim-opt-indicator_fg*
+indicator_fg ~
+    モード切替時にカーソル位置へ一瞬表示するインジケーター（ひら/カタ/
+    latn/ＬＡ）の文字色。
+    型: string / デフォルト: カラースキームの NormalFloat のまま
+
+                                               *skk.nvim-opt-indicator_bg*
+indicator_bg ~
+    同上の背景色。
+
                                               *skk.nvim-opt-user_dictionary*
 user_dictionary ~
     個人辞書（学習結果）ファイルのパス。文字コードは常にUTF-8固定。
@@ -405,12 +415,13 @@ setup() の例: >lua
     SkkCandidateWindowNormal       NormalFloat
     SkkCandidateWindowBorder       FloatBorder
     SkkCandidateWindowNormalAlt    (fg/bgと同じ。既定は縞なし)
+    SkkModeIndicator               NormalFloat
 
-`midashi_fg`/`midashi_bg`/`candidate_fg`/`candidate_bg`/`candidate_window`
-配下の色オプション（|skk.nvim-opt-candidate_window| 参照）のいずれかを
-明示的に指定すると、該当グループはリンクではなくその色で直接定義され
-る。指定が無ければ、既にユーザーやカラースキームが定義済みの場合は上書
-きしない。
+`midashi_fg`/`midashi_bg`/`candidate_fg`/`candidate_bg`/`indicator_fg`/
+`indicator_bg`/`candidate_window` 配下の色オプション
+（|skk.nvim-opt-candidate_window| 参照）のいずれかを明示的に指定すると、
+該当グループはリンクではなくその色で直接定義される。指定が無ければ、既
+にユーザーやカラースキームが定義済みの場合は上書きしない。
 
 ==============================================================================
 12. blink.cmp 連携                                        *skk.nvim-blink-cmp*

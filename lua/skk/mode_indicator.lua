@@ -27,6 +27,32 @@ local win = nil
 ---@type integer|nil
 local buf = nil
 
+--- ハイライトグループ（SkkModeIndicator）は winhighlight で当てる
+--- （'winhighlight' は特定のグループを別名にリンクするだけなので、他の
+--- フロートウィンドウ（候補一覧ウィンドウ等）には影響しない。
+--- lua/skk/henkan/candidate_window.lua と同じ方式）。
+local WINHIGHLIGHT = "NormalFloat:SkkModeIndicator"
+
+--- インジケーター用のハイライトグループのデフォルトを定義する。
+--- fg/bg のいずれかが指定されていれば、そのグループはリンクではなく
+--- 直接その色で定義する（明示的に指定した色を優先する）。指定が無ければ
+--- 標準のフロートウィンドウ用グループ（NormalFloat）にリンクしたままに
+--- する（＝カラースキーム任せ、現状と同じ見た目）。
+---@param opts { fg: string?, bg: string? }
+local function setup_highlights(opts)
+  if opts.fg or opts.bg then
+    vim.api.nvim_set_hl(0, "SkkModeIndicator", { fg = opts.fg, bg = opts.bg })
+  else
+    vim.api.nvim_set_hl(0, "SkkModeIndicator", { default = true, link = "NormalFloat" })
+  end
+end
+
+--- 見た目のオプションを設定する。lua/skk/init.lua から setup() 時に呼ばれる。
+---@param opts { fg: string?, bg: string? }|nil
+function M.setup(opts)
+  setup_highlights(opts or {})
+end
+
 ---@return integer
 local function get_buf()
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
@@ -34,6 +60,13 @@ local function get_buf()
     vim.bo[buf].bufhidden = "wipe"
   end
   return buf
+end
+
+--- ウィンドウに 'winhighlight' を適用する。候補一覧ウィンドウと同様、
+--- 失敗しても pcall で握りつぶす（単に配色が当たらないだけにする）。
+---@param w integer
+local function apply_winhighlight(w)
+  pcall(vim.api.nvim_set_option_value, "winhighlight", WINHIGHLIGHT, { win = w })
 end
 
 --- 現在のカーソル位置（挿入モード）またはコマンドライン付近
@@ -92,6 +125,7 @@ function M.show(mode)
   else
     win_config.noautocmd = true
     win = vim.api.nvim_open_win(b, false, win_config)
+    apply_winhighlight(win)
   end
 
   -- 【なぜ redraw が必要か】コマンドライン編集中（Enterを押す前）に新規

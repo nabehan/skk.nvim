@@ -106,6 +106,10 @@ require("skk").setup({
   -- midashi_fg = "#81a1c1", midashi_bg = nil,
   -- candidate_fg = "#ebcb8b", candidate_bg = "#4c566a",
 
+  -- モード切替時にカーソル位置へ一瞬表示するインジケーター（ひら/カタ/latn/ＬＡ）の
+  -- 配色（省略時はNormalFloatのまま、現状と同じ）。
+  -- indicator_fg = "#2e3440", indicator_bg = "#ff9e64",
+
   -- 候補一覧ウィンドウ表示中の <C-n>/<C-p> によるフォーカス移動。blink.cmp 等が
   -- 挿入モードに <C-n>/<C-p> の実キーマップを張っている環境向けの対策（詳細は
   -- 後述の「blink.cmp ネイティブソース統合」参照）。setup() を呼ぶ前に、
