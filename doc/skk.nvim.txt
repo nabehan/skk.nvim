@@ -1,7 +1,8 @@
 *skk.nvim.txt*    Neovim専用・denops非依存のLua実装SKK（日本語入力）プラグイン
 
 Author: nabehan
-License: 未定（リポジトリ参照）
+Version: 0.1.0
+License: MIT（同梱の LICENSE ファイル参照）
 
 ==============================================================================
 目次                                                    *skk.nvim-contents*
