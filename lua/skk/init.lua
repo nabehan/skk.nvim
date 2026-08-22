@@ -88,6 +88,11 @@ local last_skkserv_opts = nil
 ---  （ひら/カタ/latn/ＬＡ、mode_indicator.lua）の文字色（ハイライトグループ
 ---  SkkModeIndicator）。省略時はカラースキームの NormalFloat のまま（＝現状と同じ）。
 ---@field indicator_bg string? 同上の背景色。省略時は現状と同じ。
+---@field notify_mode_change boolean? モード切替・henkan確定のたびに vim.notify("skk.nvim: <モード名>")
+---  を呼ぶかどうか。デフォルト true（現状の挙動）。noice.nvim 等の通知UIを使っている場合、
+---  <C-j> の度に通知ウィンドウが開いて煩わしいことがあるため false で無効化できる。
+---  カーソル位置に一瞬表示されるインジケーター（indicator_fg/indicator_bg）はこのオプションと
+---  独立しており、false にしても表示され続ける。
 ---@field user_dictionary string? 個人辞書（学習結果）ファイルのパス。文字コードは常にUTF-8固定
 ---  （skkeleton の userDictionary の慣習に合わせている）。ファイルが無ければ自動的に作られる。
 ---  デフォルト "~/.local/share/skk/SKK-JISYO.user"（skkeleton と同じ慣習のパス）。
@@ -362,7 +367,17 @@ function M.setup(opts)
     end
   end
 
+  -- デフォルト true（現状の挙動を維持）。false ならモード切替・henkan確定
+  -- 時の vim.notify() を出さない。
+  local notify_mode_change = opts.notify_mode_change
+  if notify_mode_change == nil then
+    notify_mode_change = true
+  end
+
   local function notify_mode()
+    if not notify_mode_change then
+      return
+    end
     vim.notify("skk.nvim: " .. capture.mode_label())
   end
 
