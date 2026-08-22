@@ -270,6 +270,17 @@ function M.is_enabled()
   return capture.get_mode() ~= "ascii"
 end
 
+--- setup({ skkserv = {...} }) に渡された設定のコピーを返す（診断用。
+--- lua/skk/health.lua の :checkhealth skk から使う）。フィールドは
+--- SkkSetupOpts の skkserv と同じ（本ファイル冒頭参照）。skkserv 未設定なら nil。
+---@return table|nil
+function M.get_skkserv_opts()
+  if not last_skkserv_opts then
+    return nil
+  end
+  return vim.deepcopy(last_skkserv_opts)
+end
+
 ---@param opts SkkSetupOpts|nil
 function M.setup(opts)
   opts = opts or {}

@@ -406,6 +406,14 @@ setup() の例: >lua
     SKKサーバーは対象外（個人辞書は `user_dictionary` オプションの
     パスで固定、SKKサーバーの疎通は |:SkkCheckSkkserv| 参照）。
 
+                                                    *:checkhealth-skk*
+:checkhealth skk
+    Neovimのバージョン要件（0.10以上）・`require("skk").setup()` の
+    実行状況（個人辞書のロード有無で判定）・blink.cmp（任意の依存）
+    の検出・`dictionaries` で読み込んだローカル辞書の結果・skkserv
+    の疎通（設定されていれば |:SkkCheckSkkserv| と同様に実際に接続
+    を試す）をまとめて診断する。実装は lua/skk/health.lua。
+
 ==============================================================================
 11. ハイライトグループ                                *skk.nvim-highlights*
 

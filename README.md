@@ -126,6 +126,8 @@ require("skk").setup({
 
 他プラグインとの連携用に、`require("skk").enable()`/`disable()`/`toggle()`/`is_enabled()`（skkeleton の `<Plug>(skkeleton-enable)` 等相当）と、対応する `:SkkEnable`/`:SkkDisable`/`:SkkToggle` コマンドも用意している。`enable()` はひらがなモードへ、`disable()` は半角英数モード（henkan進行中なら先にキャンセル）へ遷移する。
 
+`:checkhealth skk` で、Neovimのバージョン要件・`setup()` の実行状況・blink.cmp（任意）の検出・ローカル辞書の読み込み結果・skkservの疎通を診断できる。
+
 辞書を使う（`▽`/`▼` 変換）には、`setup()` とは別に辞書を読み込んで登録する必要がある。SKK-JISYO.L や .LL のような大きな辞書ファイルは `load_dictionary_async()`（非同期・遅延パース）を推奨する:
 
 ```lua
