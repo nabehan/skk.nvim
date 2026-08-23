@@ -275,6 +275,17 @@ function M.is_enabled()
   return capture.get_mode() ~= "ascii"
 end
 
+--- henkan（▽/▼/abbrev）がアクティブなら <CR> 相当の確定処理を行い、true を
+--- 返す。非アクティブなら何もせず false を返す。blink.cmp 等、外部の補完UI
+--- が自身の <CR> キーマップ（accept/fallback 等）から、henkan確定を
+--- 同期的・確実にトリガーしたい場合に使う（vim.on_key() のタイミングに
+--- 依存せずに済む）。詳細・使用例は lua/skk/capture.lua の
+--- M.confirm_henkan_if_active() のコメントを参照。
+---@return boolean confirmed
+function M.confirm_henkan()
+  return capture.confirm_henkan_if_active()
+end
+
 --- setup({ skkserv = {...} }) に渡された設定のコピーを返す（診断用。
 --- lua/skk/health.lua の :checkhealth skk から使う）。フィールドは
 --- SkkSetupOpts の skkserv と同じ（本ファイル冒頭参照）。skkserv 未設定なら nil。

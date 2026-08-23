@@ -229,6 +229,74 @@ local function process_romaji(key)
   end)
 end
 
+--- <CR> 相当の確定処理の本体（henkan_state.confirm() + egg_like_newline
+--- オプション対応の改行フォローアップ）。on_key() 側の通常の <CR> 処理と、
+--- 下記 M.confirm_henkan_if_active()（外部UIから同期的に呼ばれる公開API）の
+--- 両方から共通して使う。呼び出し前提として henkan が実際にアクティブで
+--- あること（呼び出し側で確認済みであること）。
+local function do_confirm_and_maybe_newline()
+  henkan_state.confirm()
+  if not config.egg_like_newline then
+    -- SKK本来の動作: 確定に加えて改行も行う。henkan_state.confirm() の
+    -- バッファ挿入は vim.schedule で1ティック遅延しているので、それより
+    -- 後に <CR> を「本物のキー入力」として再度 feedkeys で送り込むことで、
+    -- FIFO順序（確定 -> 改行）を保証しつつ、改行そのものはNeovim
+    -- ネイティブの処理に委ねる（自前で行分割を実装しない）。
+    -- この時点で henkan は既に非アクティブになっているので、再入力された
+    -- <CR> は on_key の henkan 分岐を通らず、通常の直接入力パス
+    -- （is_target_key に該当しない印字可能ASCII外のキー）としてそのまま
+    -- Neovim に素通しされる。
+    vim.schedule(function()
+      vim.api.nvim_feedkeys(CR, "n", false)
+    end)
+  end
+end
+
+--- henkan（▽/▼/abbrev）がアクティブなら <CR> 相当の確定処理を行い、true を
+--- 返す。非アクティブなら何もせず false を返す。
+---
+--- 【なぜ必要か】blink.cmp 等の外部UIは、自身の <CR> キーマップ（accept/
+--- fallback 等）を Neovim の実キーマップとして持っており、skk.nvim の
+--- vim.on_key()（観測専用、他プラグインのキーマップ発火そのものは止め
+--- られない）だけでは「skk.nvim側の確定」と「外部UI側の<CR>処理（fallback
+--- による生の<CR> feedkeys、つまり素の改行挿入）」の実行順序を制御できず、
+--- henkan確定と改行挿入が二重に起きてしまう不具合があった（実機で発見）。
+---
+--- このAPIを外部UI側の <CR> キーマップ関数から同期的に呼び出してもらうことで、
+--- 「henkanが確定していれば、その結果を返してこのAPI呼び出しだけで完結させ、
+--- 外部UI側のfallbackへは進ませない」という制御を、UI側自身に委ねられる形に
+--- する。例（blink.cmp、lua/skk/init.lua の M.confirm_henkan() 経由）:
+---   ["<CR>"] = {
+---     "accept",
+---     function()
+---       if require("skk").confirm_henkan() then
+---         return true
+---       end
+---     end,
+---     "fallback",
+---   },
+---
+--- 【重要】このAPI経由での確定を機能させるには、上記 handle_henkan_key() の
+--- defer_to_external_ui が true になっている必要がある（passthrough_guard が
+--- 「今まさに外部UIが見えている」と判定している間は、vim.on_key() 側の
+--- 自動確定を行わない設計。詳細は defer_to_external_ui 定義箇所のコメント
+--- 参照）。passthrough_guard が未登録、または false を返す状況（例:
+--- blink.cmp 未使用、あるいは blink.cmp のメニューが表示されていない）では、
+--- 従来通り on_key() 側が <CR> を捕まえて確定するため、このAPIを呼んでも
+--- 二重確定にはならない（henkan_state.confirm() は多重呼び出しに対して
+--- 安全ではないため、呼び出し側は必ず一度だけ・実際に必要なときだけ呼ぶこと。
+--- このAPI自身は is_active() を確認してから確定するので、既に確定済み
+--- （phase=="idle"）の状態で呼んでも何もせず false を返すだけで安全）。
+---@return boolean confirmed henkan を確定したら true。もともとhenkan非
+---  アクティブだった場合は false（呼び出し側は通常通りfallback等へ進めばよい）。
+function M.confirm_henkan_if_active()
+  if not henkan_state.is_active() then
+    return false
+  end
+  do_confirm_and_maybe_newline()
+  return true
+end
+
 --- henkan（▽/▼）がアクティブな間のキー処理。
 --- <CR>/<BS>/<C-g> はフェーズに関係なく共通、それ以外はフェーズごとに
 --- 意味が変わる（▼状態の space/x は候補送り、▽状態の q はかな変換確定、等）。
@@ -259,7 +327,18 @@ local function handle_henkan_key(key)
   -- 後段で処理する）は、外部UI表示中でも従来通り継続できないと困るため、
   -- ここでは対象にしない（<CR>・両catch-allの「未対応キー」判定のみを
   -- 対象にする）。
-  local defer_to_external_ui = (phase == "midashi" or phase == "abbrev")
+  -- 【実機で発見・追加】従来は phase=="midashi"/"abbrev"（▽/abbrev状態）
+  -- のみを対象にしていたが、実際に <CR> の二重確定（henkan確定+改行の
+  -- 二重挿入）が起きていたのは phase=="select"（▼状態）だった。
+  -- blink.lua 側の SkkHenkanChanged ハンドラは phase=="idle" のとき以外
+  -- （select を含む）blink.show({ providers = { "skk" } }) でメニュー表示を
+  -- 継続する実装になっているため、既存の passthrough_guard（blink.cmp の
+  -- is_visible() ベース）はそのまま select 状態でも有効に使える。
+  -- select をここに含めることで、外部UIが見えている間は <CR> による
+  -- 自動確定を vim.on_key() 側では行わず、下記 M.confirm_henkan_if_active()
+  -- を外部UI（blink.cmp等）の <CR> キーマップから同期的に呼んでもらう形に
+  -- 一本化できる（二重確定の根本的な解消）。
+  local defer_to_external_ui = (phase == "midashi" or phase == "abbrev" or phase == "select")
     and passthrough_guard ~= nil
     and passthrough_guard(key)
 
@@ -269,21 +348,7 @@ local function handle_henkan_key(key)
       -- そのまま委ねる。SKK独自の「読みをそのまま確定」は行わない。
       return false
     end
-    henkan_state.confirm()
-    if not config.egg_like_newline then
-      -- SKK本来の動作: 確定に加えて改行も行う。henkan_state.confirm() の
-      -- バッファ挿入は vim.schedule で1ティック遅延しているので、それより
-      -- 後に <CR> を「本物のキー入力」として再度 feedkeys で送り込むことで、
-      -- FIFO順序（確定 -> 改行）を保証しつつ、改行そのものはNeovim
-      -- ネイティブの処理に委ねる（自前で行分割を実装しない）。
-      -- この時点で henkan は既に非アクティブになっているので、再入力された
-      -- <CR> は on_key の henkan 分岐を通らず、通常の直接入力パス
-      -- （is_target_key に該当しない印字可能ASCII外のキー）としてそのまま
-      -- Neovim に素通しされる。
-      vim.schedule(function()
-        vim.api.nvim_feedkeys(CR, "n", false)
-      end)
-    end
+    do_confirm_and_maybe_newline()
     return false
   end
   if key == BS or key == BS_ALT or (BS_TERMCODE and key == BS_TERMCODE) then
