@@ -728,30 +728,43 @@ end
 --- 常にマーカーの直後にあるので、その長さぶん削って確定テキストを
 --- 挿入すればよい。target.lua のコマンドライン実装は、これまでの
 --- ローマ字→かな変換で使っているのと同じ経路で、実機でも動作確認済み）。
+---
+--- 【実機で発見・追加】candidate_window.hide()（nvim_win_close）も、
+--- 確定テキストの書き込みと同じく textlock 制約の対象になり得ることが
+--- 判明した。以前は vim.on_key() のコールバックから同期的に呼んでいたため
+--- 問題が表面化しなかったが、M.confirm_henkan_if_active()（外部UIの
+--- <CR> キーマップから直接呼ばれる公開API）経由で、blink.cmp 等の
+--- キーマップコールバックというより制約の強いコンテキストから呼ばれると
+--- 「E565: Not allowed to change text or change window」が発生した
+--- （実機で確認）。バッファ挿入と同じ vim.schedule 内にまとめることで
+--- 解消する（ウィンドウを閉じるタイミングも確定テキストの表示と揃うため、
+--- 見た目の一貫性もむしろ向上する）。
 ---@param text string
 function M.confirm_text(text)
   if target.kind() == "cmdline" then
     local byte_len = preedit.pending_cmdline_byte_len()
     preedit.clear_cmdline_tracking()
-    candidate_window.hide()
-    target.replace_before_cursor(byte_len, text)
     phase = "idle"
     session = nil
+    vim.schedule(function()
+      candidate_window.hide()
+      target.replace_before_cursor(byte_len, text)
+    end)
     notify_changed()
     return
   end
 
   local bufnr, row, col = preedit.anchor_position()
   preedit.hide()
-  candidate_window.hide()
-  if bufnr and row ~= nil and col ~= nil then
-    vim.schedule(function()
-      vim.api.nvim_buf_set_text(bufnr, row, col, row, col, { text })
-      vim.api.nvim_win_set_cursor(0, { row + 1, col + #text })
-    end)
-  end
   phase = "idle"
   session = nil
+  vim.schedule(function()
+    candidate_window.hide()
+    if bufnr and row ~= nil and col ~= nil then
+      vim.api.nvim_buf_set_text(bufnr, row, col, row, col, { text })
+      vim.api.nvim_win_set_cursor(0, { row + 1, col + #text })
+    end
+  end)
   notify_changed()
 end
 
