@@ -120,6 +120,23 @@ local BS_ALT = string.char(127) -- 一部の環境で Backspace が送る DEL
 -- 取得する。モジュールのトップレベルで vim.api を呼ぶと vim グローバルの
 -- 無い環境で require するだけでクラッシュするため、M.setup() 内で遅延評価する。
 local BS_TERMCODE = nil
+-- 【実機で発見】物理 <Del>（Backspaceではなく前方削除キー）も内部キーコード
+-- K_SPECIAL(0x80) + "kD"（termcap の t_kD 由来）として届く。これ自体は
+-- BS_TERMCODE と同様「文字列全体としては #key ~= 1 なので is_target_key /
+-- is_midashi_trigger_key のどちらにも該当しない」はずだったが、
+-- is_midashi_trigger_key に #key==1 のガードが無かった旧実装では、この
+-- 3バイト列に含まれる大文字 'D' を拾って誤って ▽ 変換開始と誤認していた
+-- （#key==1 ガード追加により解消。以下の DEL_TERMCODE 検知・合成キー読み
+-- 飛ばし処理は、それとは別に必要な「Neovimが<Del>の未マッピング時に内部で
+-- 合成する'd','l'相当のキー」対策）。BS_TERMCODE 同様、決め打ちのバイト値
+-- ではなく Neovim 自身に問い合わせて取得する（M.setup() 内で遅延評価）。
+local DEL_TERMCODE = nil
+-- 上記 <Del> の内部キーコードを検知した直後、Neovim が内部的に合成する
+-- 'd','l' 相当の2キー（実機・ヘッドレステスト双方で確認した固定個数。
+-- Neovimの挿入モードにおける <Del> 未マッピング時のデフォルト動作の
+-- 実装詳細に由来する）を、通常の文字入力として再解釈しないよう
+-- 読み飛ばすためのカウンタ。
+local pending_del_swallow_count = 0
 local CR = string.char(13) -- <CR> (Enter)
 local CTRL_G = string.char(7) -- <C-g>
 local CTRL_Q = string.char(17) -- <C-q>（abbrevモード専用: 全角変換して確定）
@@ -156,8 +173,16 @@ local EXTRA_TARGET_CHARS = {
 --- Sticky-shift 自体を無効化する）の両方を受け付ける。
 ---@param key string
 ---@return boolean
+--- 【実機で発見・修正】以前はこのガードが無く、`key:match("%u")` が
+--- 文字列全体のどこかに大文字ASCII文字が含まれていれば true を返す
+--- 挙動を利用してしまっていた。`<Del>`（内部キーコード 0x80,'k','D'）や
+--- `<F11>`（内部キーコード 0x80,'F','1'）等、termcap由来の3バイト特殊
+--- キーコードにたまたま大文字が含まれるケースで、1文字の大文字キー入力
+--- （Shift+文字によるトリガー）と誤認し、意図せず▽変換を開始してしまう
+--- 不具合があった（is_target_key・is_printable_ascii は元々 #key==1 の
+--- ガードを持っており、この関数だけ抜けていた）。
 local function is_midashi_trigger_key(key)
-  if key:match("%u") ~= nil then
+  if #key == 1 and key:match("%u") ~= nil then
     return true
   end
   return config.sticky_shift_enabled and key == config.sticky_shift_key
@@ -531,6 +556,22 @@ local function on_key(key, _typed)
   -- 消えないままになる）。
   mode_indicator.hide()
 
+  -- 【実機で発見】<Del> 検知・合成キー読み飛ばし（DEL_TERMCODE 定義箇所の
+  -- コメント参照）。ascii/zenei モードでは元々このキーも合成キーも
+  -- 何も処理せず素通ししていたので影響なし。hira/kata モードおよび
+  -- henkan 中（読み入力中に誤って 'd','l' が紛れ込むのを防ぐ）双方に
+  -- 一律で適用する。<Del> 自体の削除動作はNeovimネイティブの処理に
+  -- そのまま委ねる（自前で実装しない。ここでは何もせず return するのみ）。
+  if DEL_TERMCODE and key == DEL_TERMCODE then
+    context.buffer = "" -- 未確定のローマ字断片が残っていたら破棄する
+    pending_del_swallow_count = 2
+    return
+  end
+  if pending_del_swallow_count > 0 then
+    pending_del_swallow_count = pending_del_swallow_count - 1
+    return
+  end
+
   if context.mode == "ascii" then
     return -- 完全パススルー。<C-j> は init.lua 側のキーマップで処理する
   end
@@ -779,6 +820,8 @@ function M.setup(opts)
   -- 物理 <BS> キーが termcap 経由の特殊な内部キーコードとして届く環境が
   -- あるため、Neovim 自身に問い合わせて実際の表現を取得しておく。
   BS_TERMCODE = vim.api.nvim_replace_termcodes("<BS>", true, true, true)
+  -- 物理 <Del> キーも同様（DEL_TERMCODE 定義箇所のコメント参照）。
+  DEL_TERMCODE = vim.api.nvim_replace_termcodes("<Del>", true, true, true)
   ns_id = vim.on_key(on_key, ns_id)
 
   -- バッファのモードとコマンドラインのモードを独立に保つための
