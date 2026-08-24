@@ -311,12 +311,27 @@ local function process_romaji(key)
   -- 新しい未確定シーケンスの先頭（直前まで context.buffer が空だった）
   -- なら、ネイティブ文字挿入が起きる前の「今の」カーソル位置を extmark
   -- で記録しておく（pending_ns/pending_mark_id 定義箇所のコメント参照）。
+  --
+  -- 【実機で発見・緊急修正】right_gravity を明示しておらずデフォルトの
+  -- true のままだったため、extmark 作成直後にちょうどそのバイト位置へ
+  -- ネイティブ文字（例: "k"）が挿入されると、extmark 自身が「挿入された
+  -- 文字の直後」へ押し出されてしまっていた（Neovimのextmarkのデフォルト
+  -- 挙動: right_gravity=true は「挿入位置に文字が入るとマークは
+  -- その文字の後ろへ移動する」）。これにより「未確定シーケンスの先頭
+  -- （削除開始位置）」のつもりが実質「現在のカーソルと常に同じ位置」に
+  -- なってしまい、削除すべき範囲が常に空になって、ネイティブ挿入された
+  -- 先頭の子音字（"k" 等）が消されないまま残ってしまう不具合を招いた
+  -- （"ka" と打っても "kか" になってしまう等）。right_gravity=false を
+  -- 明示し、「マーク作成位置に文字が挿入されてもマーク自身は動かない
+  -- （新しい文字はマークの後ろに追加されたものとして扱う）」動作にする
+  -- ことで解消する。
   if old_pending_len == 0 and target.kind() == "buffer" then
     clear_pending_mark()
     local win = vim.api.nvim_get_current_win()
     local cursor = vim.api.nvim_win_get_cursor(win)
     local bufnr = vim.api.nvim_get_current_buf()
-    pending_mark_id = vim.api.nvim_buf_set_extmark(bufnr, get_pending_ns(), cursor[1] - 1, cursor[2], {})
+    pending_mark_id =
+      vim.api.nvim_buf_set_extmark(bufnr, get_pending_ns(), cursor[1] - 1, cursor[2], { right_gravity = false })
   end
 
   Input.kanaInput(context, key)
@@ -660,6 +675,36 @@ local function on_key(key, _typed)
       suppress_until_next_tick = false
     end)
     return
+  end
+
+  -- 【実機で発見】nvim-autopairs 等、対応する閉じ括弧・引用符を自動挿入
+  -- するプラグインは、Vim標準のアンドゥ境界制御イディオム
+  -- `<C-g>u`（新しい変更としてアンドゥ境界を作る）と
+  -- `<C-g>U`（直後の1回のカーソル移動でアンドゥを分断しない）を組み合わせ、
+  -- ペア文字＋カーソル移動を <expr> マッピングの返り値として一括で
+  -- キー入力に再投入する実装が広く使われている（実機の on_key() ログで
+  -- 実際に `<C-g>u""<C-g>U<Left><C-g>u` 相当の並びを確認済み）。
+  -- この並びに含まれる大文字 'U'（0x55）は、1文字単独の文字列としては
+  -- is_midashi_trigger_key の #key==1 ガードをすり抜けてしまい、
+  -- 本物の Shift+U 押下と区別がつかず、意図せず ▽ 変換を開始してしまう
+  -- 不具合があった（実機で確認：ひらがな/カタカナ入力中に "、'、`
+  -- 等の引用符系キーを打鍵すると発生）。
+  --
+  -- <C-g> 自体は henkan 中の本物のキャンセル操作（handle_henkan_key の
+  -- CTRL_G 分岐）としても使われるため、<C-r> と違って <C-g> そのものは
+  -- ここで消費せず、これまで通り後続の処理に委ねる。その代わり、
+  -- 同じ同期的な処理の中で <C-g> の直後に続くキー（合成キーであれば
+  -- 'u'/'U'・ペア文字・カーソル移動キー等が同じティック内で連続して
+  -- 届く）を、次のティックまで抑制する。本物のユーザーが単独で <C-g> を
+  -- 押した場合、次の物理キー入力は別のティックになるため、この抑制は
+  -- 実害を及ぼさない。
+  if key == CTRL_G then
+    suppress_until_next_tick = true
+    vim.schedule(function()
+      suppress_until_next_tick = false
+    end)
+    -- <C-g> 自体はここでは return しない（henkan中のキャンセル等、
+    -- 通常の処理へそのまま続ける）。
   end
 
   -- 【実機で発見】<Del> 検知・合成キー読み飛ばし（DEL_TERMCODE 定義箇所の
