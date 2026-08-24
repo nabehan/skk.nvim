@@ -359,8 +359,29 @@ local function process_romaji(key)
       end
     end
     replace_before_cursor(old_pending_len, display, start_pos)
+
     if pending == "" then
       clear_pending_mark()
+    elseif pending_mark_id ~= nil and target.kind() == "buffer" then
+      -- 【実機で発見・重大なリグレッション修正】ここでマークを動かさずに
+      -- 元の位置（未確定シーケンス全体の先頭）へ置いたままにしていると、
+      -- 促音（「っ」）のように「今回の呼び出しで確定して書き込んだ文字と、
+      -- なお続く未確定の pending」が同時に発生するケースで、次のキー入力
+      -- 時にこのマークを起点として削除する範囲が、今回すでに確定して
+      -- バッファへ書き込んだ文字（「っ」等）まで巻き込んでしまい、
+      -- 二度と復元できずに消えてしまう不具合があった（実機で発見：
+      -- "tta" と打つと「った」ではなく「た」になる）。
+      -- 書き込み後のカーソルは「確定分＋pending」の末尾にあるので、
+      -- そこから pending のバイト数だけ戻った位置＝「確定分の直後、
+      -- pending の先頭」へマークを付け直す。これにより次回の削除範囲は
+      -- 常に「まだ確定していない部分」だけに限定される。
+      local win = vim.api.nvim_get_current_win()
+      local cursor = vim.api.nvim_win_get_cursor(win)
+      local new_col = math.max(cursor[2] - #pending, 0)
+      local bufnr = vim.api.nvim_get_current_buf()
+      pcall(vim.api.nvim_buf_del_extmark, bufnr, get_pending_ns(), pending_mark_id)
+      pending_mark_id =
+        vim.api.nvim_buf_set_extmark(bufnr, get_pending_ns(), cursor[1] - 1, new_col, { right_gravity = false })
     end
   end)
 end
