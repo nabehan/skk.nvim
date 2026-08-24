@@ -64,9 +64,20 @@ M._compute_cmdline_replace = compute_cmdline_replace -- テストから直接検
 --- M.kind() が "buffer" か "cmdline" かに応じて処理を振り分ける。
 --- どちらでもない場合（呼び出し側が事前に M.kind() で確認している想定）は
 --- 何もしない。
+---
+--- 【実機で発見】`start_pos` を渡した場合（buffer のみ対応。呼び出し側が
+--- extmark 等で追跡した「削除範囲の開始位置」）は `byte_len` の逆算より
+--- こちらを優先する。呼んだ側（lua/skk/capture.lua の process_romaji）と
+--- ここでの処理タイミングの間に、nvim-autopairs 等の他プラグインが
+--- カーソル付近へ追加の文字を挿入していても、extmark はバッファ編集に
+--- 追従して自動補正されるため、`byte_len`（固定のバイト数逆算）方式より
+--- 正確に「本来削除すべき範囲」を特定できる。start_col が現在のカーソル
+--- より後ろになってしまっている等、明らかに不整合な場合は安全側として
+--- 従来の byte_len 方式にフォールバックする。
 ---@param byte_len integer
 ---@param text string
-function M.replace_before_cursor(byte_len, text)
+---@param start_pos { row: integer, col: integer }|nil
+function M.replace_before_cursor(byte_len, text, start_pos)
   local kind = M.kind()
 
   if kind == "buffer" then
@@ -74,15 +85,19 @@ function M.replace_before_cursor(byte_len, text)
     local cursor = vim.api.nvim_win_get_cursor(win)
     local row0 = cursor[1] - 1
     local col = cursor[2]
-    local start_col = math.max(col - byte_len, 0)
+    local start_row, start_col = row0, math.max(col - byte_len, 0)
 
-    if byte_len > 0 then
-      vim.api.nvim_buf_set_text(0, row0, start_col, row0, col, {})
+    if start_pos ~= nil and (start_pos.row < row0 or (start_pos.row == row0 and start_pos.col <= col)) then
+      start_row, start_col = start_pos.row, start_pos.col
+    end
+
+    if start_row ~= row0 or start_col < col then
+      vim.api.nvim_buf_set_text(0, start_row, start_col, row0, col, {})
     end
     if text ~= "" then
-      vim.api.nvim_buf_set_text(0, row0, start_col, row0, start_col, { text })
+      vim.api.nvim_buf_set_text(0, start_row, start_col, start_row, start_col, { text })
     end
-    vim.api.nvim_win_set_cursor(win, { row0 + 1, start_col + #text })
+    vim.api.nvim_win_set_cursor(win, { start_row + 1, start_col + #text })
     return
   end
 

@@ -49,6 +49,7 @@
 local Context = require("skk.context")
 local Input = require("skk.input")
 local kana_util = require("skk.kana_util")
+local kana_table = require("skk.kana_table")
 local mode_util = require("skk.mode")
 local henkan_state = require("skk.henkan.state")
 local mode_indicator = require("skk.mode_indicator")
@@ -253,8 +254,52 @@ end
 --- lua/skk/target.lua が吸収する。
 ---@param byte_len integer
 ---@param text string
-local function replace_before_cursor(byte_len, text)
-  target.replace_before_cursor(byte_len, text)
+---@param start_pos { row: integer, col: integer }|nil
+local function replace_before_cursor(byte_len, text, start_pos)
+  target.replace_before_cursor(byte_len, text, start_pos)
+end
+
+-- 【実機で発見】直接入力（ひらがな/カタカナモード、henkan非アクティブ）
+-- でのローマ字プレエディット表示は、これまで「今回のキーで新たに増えた
+-- 未確定バイト数」を素朴に数えて『カーソル直前からその分だけ削除して
+-- 置き換える』方式（バイト数の逆算）で実装していた。これは、次のキー
+-- 入力までの間（vim.schedule() による1ティックの遅延の間）に、
+-- nvim-autopairs 等バッファへ実際に書き込む他プラグインが「今回打った
+-- キーの直後」にさらに文字を挿入すると（例: "(" に対する自動 ")"
+-- 挿入）、削除すべき範囲の想定がずれてしまい、確定したかなの文字化けや
+-- カーソル位置のずれを引き起こしていた（実機で報告された不具合）。
+--
+-- henkan（▽/▼）中のプレエディットは元々 extmark の virt_text のみで
+-- 表示し、実バッファには一切書き込まない設計（lua/skk/henkan/preedit.lua
+-- 参照）のためこの問題が起きない。直接入力のローマ字プレエディットは
+-- 「打った端から実バッファに反映される」体験を保つため同じ方式は
+-- 採れないが、代わりに「未確定シーケンスの先頭位置」を extmark で
+-- 記録しておき、削除範囲を『バイト数の逆算』ではなく『その extmark の
+-- （バッファ編集に追従して自動補正された）現在位置からカーソンまで』に
+-- することで、間に他プラグインが何文字挿入していても正しく追従できる
+-- ようにする。
+---@type integer|nil
+local pending_ns = nil
+---@type integer|nil
+local pending_mark_id = nil
+
+---@return integer
+local function get_pending_ns()
+  if not pending_ns then
+    pending_ns = vim.api.nvim_create_namespace("skk_direct_pending")
+  end
+  return pending_ns
+end
+
+--- 未確定ローマ字シーケンスの先頭位置を示す extmark を削除する
+--- （シーケンスが確定・中断・破棄されたとき、直接入力モードから離れる
+--- ときなどに呼ぶ）。
+local function clear_pending_mark()
+  if pending_mark_id == nil then
+    return
+  end
+  pcall(vim.api.nvim_buf_del_extmark, vim.api.nvim_get_current_buf(), get_pending_ns(), pending_mark_id)
+  pending_mark_id = nil
 end
 
 --- ローマ字入力を処理し、確定したかな（モードに応じてカタカナに
@@ -262,6 +307,17 @@ end
 ---@param key string
 local function process_romaji(key)
   local old_pending_len = #context.buffer
+
+  -- 新しい未確定シーケンスの先頭（直前まで context.buffer が空だった）
+  -- なら、ネイティブ文字挿入が起きる前の「今の」カーソル位置を extmark
+  -- で記録しておく（pending_ns/pending_mark_id 定義箇所のコメント参照）。
+  if old_pending_len == 0 and target.kind() == "buffer" then
+    clear_pending_mark()
+    local win = vim.api.nvim_get_current_win()
+    local cursor = vim.api.nvim_win_get_cursor(win)
+    local bufnr = vim.api.nvim_get_current_buf()
+    pending_mark_id = vim.api.nvim_buf_set_extmark(bufnr, get_pending_ns(), cursor[1] - 1, cursor[2], {})
+  end
 
   Input.kanaInput(context, key)
   local confirmed = context:flush()
@@ -275,7 +331,18 @@ local function process_romaji(key)
   vim.schedule(function()
     -- blink.cmp との統合作業で踏んだ textlock (E565) と同じ問題を避けるため、
     -- 実際のバッファ書き換えは1ティック遅らせる。
-    replace_before_cursor(old_pending_len, display)
+    local start_pos = nil
+    if pending_mark_id ~= nil and target.kind() == "buffer" then
+      local bufnr = vim.api.nvim_get_current_buf()
+      local ok, mark = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, get_pending_ns(), pending_mark_id, {})
+      if ok and mark and mark[1] ~= nil then
+        start_pos = { row = mark[1], col = mark[2] }
+      end
+    end
+    replace_before_cursor(old_pending_len, display, start_pos)
+    if pending == "" then
+      clear_pending_mark()
+    end
   end)
 end
 
@@ -603,6 +670,7 @@ local function on_key(key, _typed)
   -- そのまま委ねる（自前で実装しない。ここでは何もせず return するのみ）。
   if DEL_TERMCODE and key == DEL_TERMCODE then
     context.buffer = "" -- 未確定のローマ字断片が残っていたら破棄する
+    clear_pending_mark()
     pending_del_swallow_count = 2
     return
   end
@@ -714,6 +782,7 @@ local function on_key(key, _typed)
     -- 個別のキーごとに対処するのではなく、この汎用的なリセットで
     -- <BS>/<Delete>、そして今後遭遇する未知のキーもまとめて防ぐ。
     context.buffer = ""
+    clear_pending_mark()
     return
   end
 
@@ -756,6 +825,7 @@ local function on_cmdline_enter()
     context.mode = config.cmdline_start_mode
   end
   context.buffer = ""
+  clear_pending_mark()
   mode_indicator.hide()
 end
 
@@ -765,6 +835,7 @@ local function on_cmdline_leave()
   end
   saved_buffer_mode = nil
   context.buffer = ""
+  clear_pending_mark()
   mode_indicator.hide()
 end
 
@@ -791,6 +862,7 @@ function M.transition(ctrl_key)
   end
   context.mode = target
   context.buffer = "" -- 未確定のローマ字断片が残っていたら破棄する
+  clear_pending_mark()
   mode_indicator.show(target)
   return context.mode
 end
@@ -809,6 +881,7 @@ end
 function M.set_mode(mode)
   context.mode = mode
   context.buffer = ""
+  clear_pending_mark()
   mode_indicator.show(mode)
 end
 
@@ -818,7 +891,7 @@ function M.mode_label()
 end
 
 --- vim.on_key() のリスナーを登録する。init 時に一度だけ呼ぶ。
----@param opts { sticky_shift_enabled: boolean?, sticky_shift_key: string?, egg_like_newline: boolean?, char_key_to_ascii: string?, char_key_to_kata_or_hira: string?, char_key_to_zenei: string?, abbrev_key: string?, ctrl_keys: string[]? }|nil
+---@param opts { sticky_shift_enabled: boolean?, sticky_shift_key: string?, egg_like_newline: boolean?, char_key_to_ascii: string?, char_key_to_kata_or_hira: string?, char_key_to_zenei: string?, abbrev_key: string?, ctrl_keys: string[]?, period: string?, comma: string? }|nil
 function M.setup(opts)
   opts = opts or {}
   if opts.sticky_shift_enabled ~= nil then
@@ -841,6 +914,15 @@ function M.setup(opts)
   end
   if opts.abbrev_key ~= nil then
     config.abbrev_key = opts.abbrev_key
+  end
+  -- 句読点（ひらがな/カタカナモードでのローマ字 "." "," の変換結果）。
+  -- kana_table は module-level のプレーンな Lua テーブル（require ごとの
+  -- 使い回し）なので、ここで直接上書きすれば以降の変換すべてに反映される。
+  if opts.period ~= nil then
+    kana_table["."] = opts.period
+  end
+  if opts.comma ~= nil then
+    kana_table[","] = opts.comma
   end
 
   -- 【重要】l/q/L・<C-j>相当（ctrl_keys）の物理キー割り当てを、mode.lua

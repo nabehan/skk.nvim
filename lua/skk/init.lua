@@ -321,6 +321,8 @@ function M.setup(opts)
     char_key_to_zenei = opts.char_key_to_zenei,
     abbrev_key = opts.abbrev_key,
     ctrl_keys = ctrl_keys,
+    period = opts.period,
+    comma = opts.comma,
   })
   candidate_window.setup(opts.candidate_window or {})
   mode_indicator.setup({ fg = opts.indicator_fg, bg = opts.indicator_bg })
