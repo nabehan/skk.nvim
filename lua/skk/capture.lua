@@ -284,8 +284,6 @@ end
 -- ようにする。
 ---@type integer|nil
 local pending_ns = nil
----@type integer|nil
-local pending_mark_id = nil
 
 ---@return integer
 local function get_pending_ns()
@@ -295,95 +293,240 @@ local function get_pending_ns()
   return pending_ns
 end
 
+-- 【根本原因・ヘッドレスNeovim(実機と同一のv0.12.4)でのRPC経由キー入力
+-- 再現により判明】nvim-autopairs 等が返す合成キー列（例:
+-- `<C-g>u()<C-g>U<Left><C-g>u`）の中に、開き文字・閉じ文字の両方が
+-- process_romaji() の変換対象キー（EXTRA_TARGET_CHARS）である場合
+-- （ひらがな/カタカナの `(`/`[` や、全角英数モードの全記号）、
+-- 同一ティック内で process_romaji() が複数回連続して呼ばれる。
+--
+-- 以前の実装は「1回の process_romaji() 呼び出しごとに、独立して
+-- extmark を作成し、独立して vim.schedule() で書き込みを予約する」
+-- 設計だった。しかし extmark の識別子（旧 pending_mark_id）はモジュール
+-- レベルの単一変数だったため、2回目の呼び出しが1回目の extmark を
+-- clear_pending_mark() で消して自分の extmark に差し替えてしまい、
+-- さらに先に実行される1回目の vim.schedule() クロージャが（クロージャは
+-- その変数を参照で捕捉するため）本来2回目のものである extmark を誤って
+-- 使用したうえ、自分の pending=="" 判定でそれを消してしまう、という
+-- 競合が起きていた。加えて、合成キー列に含まれる `<Left>` は
+-- process_romaji() を経由せずNeovimネイティブの処理へそのまま渡るため、
+-- まだ何も書き込まれていない（extmarkが指す位置に到達する前の）
+-- タイミングでカーソルを動かしてしまい、2回目の書き込みが
+-- extmark ではなく「その時点のズレたカーソル位置」にフォールバックして
+-- しまっていた。結果として、確定済みだった文字列の途中に新しい文字が
+-- 割り込む不具合になっていた（詳細な発生順序は process_romaji() と
+-- target.lua の M.replace_before_cursor() のコメントを参照）。
+--
+-- 根本対応として、「同一ティック内に蓄積された、まだ1回も flush
+-- されていないキー入力のまとまり」をバッチとして扱う。バッチの最初の
+-- キーでのみ extmark 作成・vim.schedule() の予約を行い、そのバッチに
+-- 属する後続のキーは単に蓄積するだけにする。flush が実際に実行された
+-- ときに初めて、蓄積された内容を「1回のバッファ編集」としてまとめて
+-- 書き込む。これにより、同一ティック内で何回 process_romaji() が
+-- 呼ばれても、書き込みそのものは必ず1回になり、複数の extmark 同士が
+-- 競合する余地自体がなくなる。通常の（1キーずつ間隔をおいた）typing
+-- では、次のキーが来る前に前のバッチの flush が実行され終わっているため、
+-- 実質的に「バッチサイズ1」となり、これまでと全く同じ挙動になる
+-- （新規追加した tests/capture_batch_spec.lua 参照）。
+---@type { active: boolean, mark_id: integer|nil, old_len: integer, confirmed: string }
+local hira_kata_batch = { active = false, mark_id = nil, old_len = 0, confirmed = "" }
+
+--- hira_kata_batch.mark_id の extmark を無条件に削除する（バッチの
+--- flush 処理自身からのみ呼ぶ内部用）。他の箇所からは、下の
+--- ガード付き clear_pending_mark() を使うこと。
+local function clear_pending_mark_unchecked()
+  if hira_kata_batch.mark_id == nil then
+    return
+  end
+  pcall(vim.api.nvim_buf_del_extmark, vim.api.nvim_get_current_buf(), get_pending_ns(), hira_kata_batch.mark_id)
+  hira_kata_batch.mark_id = nil
+end
+
 --- 未確定ローマ字シーケンスの先頭位置を示す extmark を削除する
 --- （シーケンスが確定・中断・破棄されたとき、直接入力モードから離れる
 --- ときなどに呼ぶ）。
+---
+--- 【重要・バッチ化対応】hira_kata_batch がまだ flush されていない間
+--- （= vim.schedule() 済みだが未実行の書き込みが残っている間）は、
+--- ここで extmark を消してはならない。消してしまうと、その flush が
+--- 実行されるときに anchor を失い、旧実装で踏んでいた「<Left> 等の
+--- 合間の実カーソル移動に巻き込まれて挿入位置がずれる」不具合が
+--- 再発する。実際のクリア・再配置は flush_hira_kata_batch() 自身が
+--- 責任を持って行う（hira_kata_batch 定義箇所のコメント参照）。
 local function clear_pending_mark()
-  if pending_mark_id == nil then
+  if hira_kata_batch.active then
     return
   end
-  pcall(vim.api.nvim_buf_del_extmark, vim.api.nvim_get_current_buf(), get_pending_ns(), pending_mark_id)
-  pending_mark_id = nil
+  clear_pending_mark_unchecked()
+end
+
+--- hira_kata_batch を実際にバッファへ反映する。process_romaji() から
+--- vim.schedule() 経由で（バッチの最初のキーのときだけ）呼ばれる。
+--- バッチ化の詳細・経緯は hira_kata_batch 定義箇所のコメント参照。
+local function flush_hira_kata_batch()
+  local old_len = hira_kata_batch.old_len
+  local display = hira_kata_batch.confirmed .. context.buffer
+  local pending = context.buffer
+
+  -- blink.cmp との統合作業で踏んだ textlock (E565) と同じ問題を避けるため、
+  -- 実際のバッファ書き換えは1ティック遅らせている（vim.schedule 経由で
+  -- ここが呼ばれる時点で、既に「1ティック遅れた後」）。
+  local start_pos = nil
+  if hira_kata_batch.mark_id ~= nil and target.kind() == "buffer" then
+    local bufnr = vim.api.nvim_get_current_buf()
+    local ok, mark = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, get_pending_ns(), hira_kata_batch.mark_id, {})
+    if ok and mark and mark[1] ~= nil then
+      start_pos = { row = mark[1], col = mark[2] }
+    end
+  end
+  replace_before_cursor(old_len, display, start_pos)
+
+  -- 次のキー入力から新しいバッチを開始できるようにする。
+  hira_kata_batch.active = false
+
+  if pending == "" then
+    clear_pending_mark_unchecked()
+  elseif hira_kata_batch.mark_id ~= nil and target.kind() == "buffer" then
+    -- 【実機で発見・重大なリグレッション修正、バッチ化後も同じ理由で必要】
+    -- ここでマークを動かさずに元の位置（未確定シーケンス全体の先頭）へ
+    -- 置いたままにしていると、促音（「っ」）のように「今回のバッチで
+    -- 確定して書き込んだ文字と、なお続く未確定の pending」が同時に
+    -- 発生するケースで、次のバッチがこのマークを起点として削除する範囲が、
+    -- 今回すでに確定してバッファへ書き込んだ文字（「っ」等）まで
+    -- 巻き込んでしまい、二度と復元できずに消えてしまう不具合があった
+    -- （実機で発見："tta" と打つと「った」ではなく「た」になる）。
+    -- 書き込み後のカーソルは「確定分＋pending」の末尾にあるので、
+    -- そこから pending のバイト数だけ戻った位置＝「確定分の直後、
+    -- pending の先頭」へマークを付け直す。これにより次のバッチの削除
+    -- 範囲は常に「まだ確定していない部分」だけに限定される。
+    local win = vim.api.nvim_get_current_win()
+    local cursor = vim.api.nvim_win_get_cursor(win)
+    local new_col = math.max(cursor[2] - #pending, 0)
+    local bufnr = vim.api.nvim_get_current_buf()
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, get_pending_ns(), hira_kata_batch.mark_id)
+    hira_kata_batch.mark_id =
+      vim.api.nvim_buf_set_extmark(bufnr, get_pending_ns(), cursor[1] - 1, new_col, { right_gravity = false })
+  end
 end
 
 --- ローマ字入力を処理し、確定したかな（モードに応じてカタカナに
 --- 変換済み）と未確定バッファをバッファへ反映する。
+---
+--- 【バッチ化】同一ティック内で複数回呼ばれても、実際のバッファ書き込み
+--- （vim.schedule 経由）は最初の呼び出しの分だけ予約され、後続の呼び出しは
+--- hira_kata_batch.confirmed に蓄積されるだけになる。詳細は
+--- hira_kata_batch 定義箇所・flush_hira_kata_batch() のコメント参照。
 ---@param key string
 local function process_romaji(key)
-  local old_pending_len = #context.buffer
+  if not hira_kata_batch.active then
+    hira_kata_batch.active = true
+    hira_kata_batch.old_len = #context.buffer
+    hira_kata_batch.confirmed = ""
 
-  -- 新しい未確定シーケンスの先頭（直前まで context.buffer が空だった）
-  -- なら、ネイティブ文字挿入が起きる前の「今の」カーソル位置を extmark
-  -- で記録しておく（pending_ns/pending_mark_id 定義箇所のコメント参照）。
-  --
-  -- 【実機で発見・緊急修正】right_gravity を明示しておらずデフォルトの
-  -- true のままだったため、extmark 作成直後にちょうどそのバイト位置へ
-  -- ネイティブ文字（例: "k"）が挿入されると、extmark 自身が「挿入された
-  -- 文字の直後」へ押し出されてしまっていた（Neovimのextmarkのデフォルト
-  -- 挙動: right_gravity=true は「挿入位置に文字が入るとマークは
-  -- その文字の後ろへ移動する」）。これにより「未確定シーケンスの先頭
-  -- （削除開始位置）」のつもりが実質「現在のカーソルと常に同じ位置」に
-  -- なってしまい、削除すべき範囲が常に空になって、ネイティブ挿入された
-  -- 先頭の子音字（"k" 等）が消されないまま残ってしまう不具合を招いた
-  -- （"ka" と打っても "kか" になってしまう等）。right_gravity=false を
-  -- 明示し、「マーク作成位置に文字が挿入されてもマーク自身は動かない
-  -- （新しい文字はマークの後ろに追加されたものとして扱う）」動作にする
-  -- ことで解消する。
-  if old_pending_len == 0 and target.kind() == "buffer" then
-    clear_pending_mark()
-    local win = vim.api.nvim_get_current_win()
-    local cursor = vim.api.nvim_win_get_cursor(win)
-    local bufnr = vim.api.nvim_get_current_buf()
-    pending_mark_id =
-      vim.api.nvim_buf_set_extmark(bufnr, get_pending_ns(), cursor[1] - 1, cursor[2], { right_gravity = false })
+    -- 新しい未確定シーケンスの先頭（直前まで context.buffer が空だった）
+    -- なら、ネイティブ文字挿入が起きる前の「今の」カーソル位置を extmark
+    -- で記録しておく。continuation（old_len > 0、多打鍵ローマ字の途中）
+    -- の場合は、以前のバッチから引き継いだ既存の mark_id をそのまま使う
+    -- （先頭位置は変わっていないため）。
+    --
+    -- 【実機で発見・緊急修正】right_gravity を明示しておらずデフォルトの
+    -- true のままだったため、extmark 作成直後にちょうどそのバイト位置へ
+    -- ネイティブ文字（例: "k"）が挿入されると、extmark 自身が「挿入された
+    -- 文字の直後」へ押し出されてしまっていた（Neovimのextmarkのデフォルト
+    -- 挙動: right_gravity=true は「挿入位置に文字が入るとマークは
+    -- その文字の後ろへ移動する」）。これにより「未確定シーケンスの先頭
+    -- （削除開始位置）」のつもりが実質「現在のカーソルと常に同じ位置」に
+    -- なってしまい、削除すべき範囲が常に空になって、ネイティブ挿入された
+    -- 先頭の子音字（"k" 等）が消されないまま残ってしまう不具合を招いた
+    -- （"ka" と打っても "kか" になってしまう等）。right_gravity=false を
+    -- 明示し、「マーク作成位置に文字が挿入されてもマーク自身は動かない
+    -- （新しい文字はマークの後ろに追加されたものとして扱う）」動作にする
+    -- ことで解消する。
+    if hira_kata_batch.old_len == 0 and target.kind() == "buffer" then
+      clear_pending_mark_unchecked()
+      local win = vim.api.nvim_get_current_win()
+      local cursor = vim.api.nvim_win_get_cursor(win)
+      local bufnr = vim.api.nvim_get_current_buf()
+      hira_kata_batch.mark_id =
+        vim.api.nvim_buf_set_extmark(bufnr, get_pending_ns(), cursor[1] - 1, cursor[2], { right_gravity = false })
+    end
+
+    vim.schedule(flush_hira_kata_batch)
   end
 
   Input.kanaInput(context, key)
   local confirmed = context:flush()
-  local pending = context.buffer
-
   local render = RENDERERS[context.mode] or function(s)
     return s
   end
-  local display = render(confirmed) .. pending
+  hira_kata_batch.confirmed = hira_kata_batch.confirmed .. render(confirmed)
+end
 
-  vim.schedule(function()
-    -- blink.cmp との統合作業で踏んだ textlock (E565) と同じ問題を避けるため、
-    -- 実際のバッファ書き換えは1ティック遅らせる。
-    local start_pos = nil
-    if pending_mark_id ~= nil and target.kind() == "buffer" then
-      local bufnr = vim.api.nvim_get_current_buf()
-      local ok, mark = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, get_pending_ns(), pending_mark_id, {})
-      if ok and mark and mark[1] ~= nil then
-        start_pos = { row = mark[1], col = mark[2] }
-      end
+-- 【実機で発見・バッチ化】全角英数モードは常に1文字→1文字の変換で、
+-- ひらがな/カタカナモードの「未確定ローマ字」に相当する概念が無い
+-- （ローマ字の複数文字を待つ状態が存在しない）。そのため以前の実装は
+-- extmark による位置追跡を一切行わず、「vim.schedule() 実行時点の
+-- カーソル位置」だけを頼りに書き込んでいた。これは、開き文字・閉じ文字
+-- 両方が印字可能ASCII文字であるオートペアの合成キー列では常に成立し
+-- （全角英数モードは全ASCII文字が変換対象のため）、同一ティック内で
+-- 複数回 vim.schedule() されると常に位置がずれる、最も脆弱な実装だった。
+-- hira_kata_batch と同じ考え方でバッチ化する（old_len に相当する概念が
+-- 無い分、hira_kata_batch よりも単純）。
+---@type { active: boolean, mark_id: integer|nil, text: string }
+local zenei_batch = { active = false, mark_id = nil, text = "" }
+
+--- zenei_batch.mark_id の extmark を無条件に削除する。
+local function clear_zenei_pending_mark()
+  if zenei_batch.mark_id == nil then
+    return
+  end
+  pcall(vim.api.nvim_buf_del_extmark, vim.api.nvim_get_current_buf(), get_pending_ns(), zenei_batch.mark_id)
+  zenei_batch.mark_id = nil
+end
+
+--- zenei_batch を実際にバッファへ反映する。process_zenei() から
+--- vim.schedule() 経由で（バッチの最初のキーのときだけ）呼ばれる。
+local function flush_zenei_batch()
+  local text = zenei_batch.text
+  local start_pos = nil
+  if zenei_batch.mark_id ~= nil and target.kind() == "buffer" then
+    local bufnr = vim.api.nvim_get_current_buf()
+    local ok, mark = pcall(vim.api.nvim_buf_get_extmark_by_id, bufnr, get_pending_ns(), zenei_batch.mark_id, {})
+    if ok and mark and mark[1] ~= nil then
+      start_pos = { row = mark[1], col = mark[2] }
     end
-    replace_before_cursor(old_pending_len, display, start_pos)
+  end
+  replace_before_cursor(0, text, start_pos)
 
-    if pending == "" then
-      clear_pending_mark()
-    elseif pending_mark_id ~= nil and target.kind() == "buffer" then
-      -- 【実機で発見・重大なリグレッション修正】ここでマークを動かさずに
-      -- 元の位置（未確定シーケンス全体の先頭）へ置いたままにしていると、
-      -- 促音（「っ」）のように「今回の呼び出しで確定して書き込んだ文字と、
-      -- なお続く未確定の pending」が同時に発生するケースで、次のキー入力
-      -- 時にこのマークを起点として削除する範囲が、今回すでに確定して
-      -- バッファへ書き込んだ文字（「っ」等）まで巻き込んでしまい、
-      -- 二度と復元できずに消えてしまう不具合があった（実機で発見：
-      -- "tta" と打つと「った」ではなく「た」になる）。
-      -- 書き込み後のカーソルは「確定分＋pending」の末尾にあるので、
-      -- そこから pending のバイト数だけ戻った位置＝「確定分の直後、
-      -- pending の先頭」へマークを付け直す。これにより次回の削除範囲は
-      -- 常に「まだ確定していない部分」だけに限定される。
+  zenei_batch.active = false
+  zenei_batch.text = ""
+  clear_zenei_pending_mark()
+end
+
+--- 全角英数モードでの印字可能ASCII文字入力を処理する。
+--- process_romaji() と同じ理由でバッチ化する（hira_kata_batch・
+--- zenei_batch 定義箇所のコメント参照）。全角英数モードには
+--- 「未確定ローマ字の継続」という概念が無いため、バッチは常に
+--- 新規に extmark を作り直す（continuation の考慮は不要）。
+---@param key string
+local function process_zenei(key)
+  if not zenei_batch.active then
+    zenei_batch.active = true
+    zenei_batch.text = ""
+
+    if target.kind() == "buffer" then
+      clear_zenei_pending_mark()
       local win = vim.api.nvim_get_current_win()
       local cursor = vim.api.nvim_win_get_cursor(win)
-      local new_col = math.max(cursor[2] - #pending, 0)
       local bufnr = vim.api.nvim_get_current_buf()
-      pcall(vim.api.nvim_buf_del_extmark, bufnr, get_pending_ns(), pending_mark_id)
-      pending_mark_id =
-        vim.api.nvim_buf_set_extmark(bufnr, get_pending_ns(), cursor[1] - 1, new_col, { right_gravity = false })
+      zenei_batch.mark_id =
+        vim.api.nvim_buf_set_extmark(bufnr, get_pending_ns(), cursor[1] - 1, cursor[2], { right_gravity = false })
     end
-  end)
+
+    vim.schedule(flush_zenei_batch)
+  end
+
+  zenei_batch.text = zenei_batch.text .. kana_util.to_zenkaku_char(key)
 end
 
 --- <CR> 相当の確定処理の本体（henkan_state.confirm() + egg_like_newline
@@ -777,10 +920,7 @@ local function on_key(key, _typed)
     if not is_printable_ascii(key) then
       return
     end
-    local zenkaku = kana_util.to_zenkaku_char(key)
-    vim.schedule(function()
-      replace_before_cursor(0, zenkaku)
-    end)
+    process_zenei(key)
     return ""
   end
 
