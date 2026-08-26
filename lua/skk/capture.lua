@@ -181,6 +181,24 @@ local suppress_until_next_tick = false
 -- （CTRL_G 定義箇所およびその使用箇所のコメント参照）。
 local pending_ctrl_g_marker = false
 
+-- 【実機で発見】"z(" によって "（"（全角開き括弧）に変換された直後、
+-- オートペアが自動追加する対になる ")" は、"z" の効果が及ばない独立した
+-- キーとして処理されるため、そのままでは半角の ")" になってしまい、
+-- 全角の開き括弧と半角の閉じ括弧が不揃いになる（実機で報告：
+-- "z(" と打つと "（)" になる。カーソル位置自体は正しく括弧の間に来る）。
+-- kana_table.lua が "z(" → "（" のみを定義しており、"z)" → "）" は
+-- 独立したキー入力としてのみ定義されているため（"(" を打つと自動的に
+-- 対になる ")" が来る、という関係を kana_table 自身は関知しない）。
+--
+-- process_romaji() で "z(" の変換（buffer が "z" だった状態で "(" を
+-- 受け取り "（" が確定した）を検知した直後の1回に限り、続く ")" を
+-- 全角 "）" に読み替えるワンショットフラグ。pending_ctrl_g_marker と
+-- 同じ「直前の1キーだけを見る」発想。バッチ（同一ティック内の複数
+-- キーのまとまり）をまたいでも安全に働くよう、フラグはバッチの生死とは
+-- 独立して管理する（"z" と "(" が別バッチになるケースを想定。
+-- process_romaji() 内、Input.kanaInput() 呼び出し前後のコメント参照）。
+local pending_z_paren_open = false
+
 -- ひらがな/カタカナモードで、確定したかなをどう表示するか。
 ---@type table<SkkMode, fun(s: string): string>
 local RENDERERS = {
@@ -517,8 +535,25 @@ local function process_romaji(key)
     vim.schedule(flush_hira_kata_batch)
   end
 
+  -- 【実機で発見・z( の非対称修正】"z(" による全角括弧変換の検知・
+  -- 読み替えのため、Input.kanaInput() で書き換わる前の buffer を見ておく
+  -- （pending_z_paren_open 定義箇所のコメント参照）。
+  local buffer_before = context.buffer
+
   Input.kanaInput(context, key)
   local confirmed = context:flush()
+
+  if pending_z_paren_open and key == ")" and confirmed == ")" then
+    -- 直前のキーで "z(" → "（" の変換が起きており、かつ今回のキーが
+    -- （z の効果が及ばない独立入力として）そのまま ")" に変換された
+    -- 場合に限り、対になる全角 "）" へ読み替える。
+    confirmed = "）"
+  end
+  -- 一回限りのフラグなので、使ったかどうかに関わらず必ずここで
+  -- 次回の状態へ更新する（今回のキーが新たに "z(" 変換を起こした場合の
+  -- み true、それ以外は false）。
+  pending_z_paren_open = (buffer_before == "z" and key == "(" and confirmed == "（")
+
   local render = RENDERERS[context.mode] or function(s)
     return s
   end
