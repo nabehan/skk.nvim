@@ -138,6 +138,14 @@ local DEL_TERMCODE = nil
 -- 実装詳細に由来する）を、通常の文字入力として再解釈しないよう
 -- 読み飛ばすためのカウンタ。
 local pending_del_swallow_count = 0
+-- カーソル位置ずれ修正（hira_kata_batch / zenei_batch のカーソルオフセット
+-- 機構）で使う、<Left>/<Right> の内部キーコード。DEL_TERMCODE 同様、
+-- 決め打ちのバイト値ではなく Neovim 自身に問い合わせて取得する
+-- （M.setup() 内で遅延評価。使用箇所のコメント参照）。
+---@type string|nil
+local LEFT_TERMCODE = nil
+---@type string|nil
+local RIGHT_TERMCODE = nil
 local CR = string.char(13) -- <CR> (Enter)
 local CTRL_G = string.char(7) -- <C-g>
 local CTRL_Q = string.char(17) -- <C-q>（abbrevモード専用: 全角変換して確定）
@@ -328,8 +336,8 @@ end
 -- では、次のキーが来る前に前のバッチの flush が実行され終わっているため、
 -- 実質的に「バッチサイズ1」となり、これまでと全く同じ挙動になる
 -- （新規追加した tests/capture_batch_spec.lua 参照）。
----@type { active: boolean, mark_id: integer|nil, old_len: integer, confirmed: string }
-local hira_kata_batch = { active = false, mark_id = nil, old_len = 0, confirmed = "" }
+---@type { active: boolean, mark_id: integer|nil, old_len: integer, confirmed: string, cursor_offset_chars: integer }
+local hira_kata_batch = { active = false, mark_id = nil, old_len = 0, confirmed = "", cursor_offset_chars = 0 }
 
 --- hira_kata_batch.mark_id の extmark を無条件に削除する（バッチの
 --- flush 処理自身からのみ呼ぶ内部用）。他の箇所からは、下の
@@ -358,6 +366,50 @@ local function clear_pending_mark()
     return
   end
   clear_pending_mark_unchecked()
+end
+
+-- 【実機で発見・カーソル位置のずれ修正】nvim-autopairs 等が生成する
+-- ペア文字列の直後の <Left>（開き文字と閉じ文字の間へカーソルを戻す
+-- ためのもの）は、process_romaji()/process_zenei() の書き込みがまだ
+-- 実行されていない間（バッチが flush 待ちの間）に届く。この時点で
+-- <Left> をそのままNeovimネイティブに処理させると、まだ何も書き込まれて
+-- いない（古い）バッファ状態に対してカーソルを動かすことになり、
+-- 結果的に「開き文字・閉じ文字の間」ではなく「ペア全体の末尾」に
+-- カーソルが残ってしまっていた（実機で報告：`いろは(` の直後に
+-- 自動挿入される `)` との間ではなく、`いろは()` の末尾にカーソルが
+-- 来てしまう）。
+--
+-- 対応として、バッチが flush 待ちの間だけ on_key() 側で <Left>/<Right>
+-- を横取りし（LEFT_TERMCODE/RIGHT_TERMCODE 使用箇所のコメント参照）、
+-- 実際にカーソルを動かす代わりに hira_kata_batch.cursor_offset_chars /
+-- zenei_batch.cursor_offset_chars へ「flush 後、何文字分ずらすか」を
+-- 積んでおく。flush 側（この関数）が、書き込み完了後の自然な
+-- カーソル位置（挿入したテキストの末尾）からこの文字数分だけ
+-- ずらすことで、「即座に書き込まれていたら本来こうなっていたはず」の
+-- 位置を再現する。
+--
+-- 文字数（バイト数ではない）で管理しているのは、全角記号のような
+-- マルチバイト文字の途中に着地してしまわないようにするため。
+-- `vim.fn.strcharpart()` で文字境界を尊重して該当バイト数を求める。
+---@param win integer
+---@param inserted_text string 直前に replace_before_cursor() で挿入したテキスト
+---@param offset_chars integer 負なら左（挿入したテキストの内部へ）、正なら右
+local function apply_batch_cursor_offset(win, inserted_text, offset_chars)
+  if offset_chars == 0 or inserted_text == "" then
+    return
+  end
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local end_col = cursor[2] -- replace_before_cursor() 直後なので、挿入テキストの末尾のはず
+  local start_col = end_col - #inserted_text
+  local total_chars = vim.fn.strchars(inserted_text)
+  local target_chars = total_chars + offset_chars
+  if target_chars < 0 then
+    target_chars = 0
+  elseif target_chars > total_chars then
+    target_chars = total_chars
+  end
+  local prefix = vim.fn.strcharpart(inserted_text, 0, target_chars)
+  vim.api.nvim_win_set_cursor(win, { cursor[1], start_col + #prefix })
 end
 
 --- hira_kata_batch を実際にバッファへ反映する。process_romaji() から
@@ -407,6 +459,17 @@ local function flush_hira_kata_batch()
     hira_kata_batch.mark_id =
       vim.api.nvim_buf_set_extmark(bufnr, get_pending_ns(), cursor[1] - 1, new_col, { right_gravity = false })
   end
+
+  -- 【カーソル位置のずれ修正】on_key() 側で <Left>/<Right> の代わりに
+  -- 積んでおいたオフセットを、ここで初めて実際のカーソル移動として
+  -- 適用する（apply_batch_cursor_offset 定義箇所のコメント参照）。
+  -- 必ず最後に行う：マーク再配置（上のブロック）は「書き込み直後の
+  -- 自然なカーソル位置」を前提にしているため、オフセット適用より先に
+  -- 済ませておく必要がある。
+  if target.kind() == "buffer" and hira_kata_batch.cursor_offset_chars ~= 0 then
+    apply_batch_cursor_offset(vim.api.nvim_get_current_win(), display, hira_kata_batch.cursor_offset_chars)
+  end
+  hira_kata_batch.cursor_offset_chars = 0
 end
 
 --- ローマ字入力を処理し、確定したかな（モードに応じてカタカナに
@@ -472,8 +535,8 @@ end
 -- 複数回 vim.schedule() されると常に位置がずれる、最も脆弱な実装だった。
 -- hira_kata_batch と同じ考え方でバッチ化する（old_len に相当する概念が
 -- 無い分、hira_kata_batch よりも単純）。
----@type { active: boolean, mark_id: integer|nil, text: string }
-local zenei_batch = { active = false, mark_id = nil, text = "" }
+---@type { active: boolean, mark_id: integer|nil, text: string, cursor_offset_chars: integer }
+local zenei_batch = { active = false, mark_id = nil, text = "", cursor_offset_chars = 0 }
 
 --- zenei_batch.mark_id の extmark を無条件に削除する。
 local function clear_zenei_pending_mark()
@@ -497,6 +560,13 @@ local function flush_zenei_batch()
     end
   end
   replace_before_cursor(0, text, start_pos)
+
+  -- 【カーソル位置のずれ修正】hira_kata_batch と同じ理由・同じ仕組み
+  -- （apply_batch_cursor_offset 定義箇所のコメント参照）。
+  if target.kind() == "buffer" and zenei_batch.cursor_offset_chars ~= 0 then
+    apply_batch_cursor_offset(vim.api.nvim_get_current_win(), text, zenei_batch.cursor_offset_chars)
+  end
+  zenei_batch.cursor_offset_chars = 0
 
   zenei_batch.active = false
   zenei_batch.text = ""
@@ -882,8 +952,50 @@ local function on_key(key, _typed)
     -- ということなので、このキーは下へそのまま読み進めて通常通り
     -- 処理する。
   end
+  -- 【実機で発見・追加修正】<C-g> 自体は、これまで「マーカーを立てたあと
+  -- 通常の処理へ読み進める」実装にしていた。henkan（▽/▼）非アクティブ時、
+  -- これは大抵の場合 is_target_key(<C-g>) が false になり「未知キーによる
+  -- リセット」（下記、is_target_key 判定のコメント参照）に落ちるだけなので
+  -- 無害に見えたが、"z(" のような複数キーからなるローマ字プレフィックス
+  -- 入力（"z" だけでは確定せず、次のキーで初めて全角記号等が確定する）の
+  -- 「z」を打った直後に、たまたま次の実キーがオートペア対象の開き文字
+  -- （"(" 等）だった場合に限って問題が表面化した：オートペアの合成キー列
+  -- `<C-g>u()<C-g>U<Left><C-g>u` の先頭の <C-g> が「未知キーによる
+  -- リセット」を発火させ、"z" が確定を待っていた未確定バッファ
+  -- （context.buffer=="z"）を、本来の続き（"("）が処理される前に
+  -- 破棄してしまっていた（実機で発見："z(" と打つと "z()"（"z" のゴミが
+  -- 残ったうえ、全角にもならない半角の "()"）になってしまう）。
+  -- 対応する 'u'/'U' の消費（上のブロック）と同様、<C-g> 自体も
+  -- ここで return して、以降の「未知キーによるリセット」を含む処理へ
+  -- 進めないようにする。<C-g> はアンドゥ境界制御のための合成キー列の
+  -- 一部としてのみ意味を持ち、それ自体が持つべき「かな入力としての
+  -- 意味」は無いため、握りつぶしても副作用は無い。
   if key == CTRL_G then
     pending_ctrl_g_marker = true
+    return
+  end
+
+  -- 【実機で発見・カーソル位置のずれ修正】バッチが flush 待ちの間だけ
+  -- <Left>/<Right> を横取りする（apply_batch_cursor_offset 定義箇所の
+  -- コメント参照）。バッチが flush 待ちでない（＝通常のカーソル移動の）
+  -- 間は一切介入せず、従来通りそのままNeovimネイティブの処理に委ねる。
+  -- コマンドラインモード（target.kind()=="cmdline"）は対象外
+  -- （nvim_win_get_cursor が意味を持たないため。cmdline編集中に
+  -- nvim-autopairs のようなペア自動挿入を使う実用上のケースは想定しない）。
+  if (key == LEFT_TERMCODE or key == RIGHT_TERMCODE) and target.kind() == "buffer" then
+    local delta = (key == LEFT_TERMCODE) and -1 or 1
+    local intercepted = false
+    if hira_kata_batch.active then
+      hira_kata_batch.cursor_offset_chars = hira_kata_batch.cursor_offset_chars + delta
+      intercepted = true
+    end
+    if zenei_batch.active then
+      zenei_batch.cursor_offset_chars = zenei_batch.cursor_offset_chars + delta
+      intercepted = true
+    end
+    if intercepted then
+      return ""
+    end
   end
 
   -- 【実機で発見】<Del> 検知・合成キー読み飛ばし（DEL_TERMCODE 定義箇所の
@@ -1164,6 +1276,10 @@ function M.setup(opts)
   BS_TERMCODE = vim.api.nvim_replace_termcodes("<BS>", true, true, true)
   -- 物理 <Del> キーも同様（DEL_TERMCODE 定義箇所のコメント参照）。
   DEL_TERMCODE = vim.api.nvim_replace_termcodes("<Del>", true, true, true)
+  -- カーソル位置ずれ修正で使う <Left>/<Right>（LEFT_TERMCODE/RIGHT_TERMCODE
+  -- 定義箇所のコメント参照）。
+  LEFT_TERMCODE = vim.api.nvim_replace_termcodes("<Left>", true, true, true)
+  RIGHT_TERMCODE = vim.api.nvim_replace_termcodes("<Right>", true, true, true)
   ns_id = vim.on_key(on_key, ns_id)
 
   -- バッファのモードとコマンドラインのモードを独立に保つための
