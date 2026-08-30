@@ -537,6 +537,36 @@ allowed to change text or change window` になることがあるためです。
 実例は https://github.com/nabehan/nvim-skk-sandbox の init.lua も参照
 してください。
 
+                                          *skk.nvim-blink-cmp-autopairs*
+オートペア系プラグインとの相性 ~
+
+nvim-autopairs 等、対応する閉じ文字を自動挿入するプラグインと henkan
+（▽/▼/abbrev）を併用すると、abbrev モードで見出しが空・候補0件の
+状態のまま記号を打鍵した際にプレエディットが即座に確定してしまう等の
+相性問題が起こることがあります。skk.nvim 本体を変更するのではなく、
+henkan アクティブ中はオートペア側を無効化し、`idle` に戻ったら再度
+有効化する方式を推奨します: >lua
+
+    vim.api.nvim_create_autocmd("User", {
+      pattern = "SkkHenkanChanged",
+      callback = function(ev)
+        local phase = ev.data and ev.data.phase
+        local ok, autopairs = pcall(require, "nvim-autopairs")
+        if ok then
+          if phase == "idle" then
+            autopairs.enable()
+          else
+            autopairs.disable()
+          end
+        end
+        -- ...（上記の show()/hide() と同居させる）
+      end,
+    })
+<
+詳細・他のオートペア系プラグイン（mini.pairs 等）でのAPI調査結果は
+README の「abbrev モードでのオートペア相性問題と、推奨される回避策」
+を参照してください（|skk.nvim-links|）。
+
 ==============================================================================
 13. 既知の制限                                        *skk.nvim-limitations*
 
