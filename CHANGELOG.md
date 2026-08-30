@@ -4,6 +4,14 @@
 形式は [Keep a Changelog](https://keepachangelog.com/ja/1.0.0/) を、バージョニングは
 [Semantic Versioning](https://semver.org/lang/ja/) を参考にしている。
 
+## [Unreleased]
+
+### 修正
+
+- abbrev モードで見出しが空・候補0件の状態のまま `"` `'` `` ` `` `(` `[` `{` を打鍵すると、ライブ補完が起動せずペア文字がそのまま即座に確定してしまう不具合を修正した。
+  - skk.nvim 本体（`capture.lua`）には変更を加えていない。henkan（▽/▼/abbrev）がアクティブな間は `SkkHenkanChanged` autocmd を使ってオートペア側のプラグイン自体を無効化し、`idle` に戻ったら再度有効化する方式を、ユーザー設定側の推奨パターンとして README に追記した（詳細は README の「abbrev モードでのオートペア相性問題と、推奨される回避策」参照）。
+  - `capture.lua` 側で合成キー列を後追い解釈するパッチも試作したが、ヘッドレス環境では効果を確認できたものの実機では解消せず、原因も特定できなかったため revert した。
+
 ## [v0.1.1] - 2026-08-26
 
 ### 修正
