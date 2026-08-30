@@ -181,27 +181,6 @@ local suppress_until_next_tick = false
 -- （CTRL_G 定義箇所およびその使用箇所のコメント参照）。
 local pending_ctrl_g_marker = false
 
--- 【今回の修正】<C-g>U（大文字U）のマーカーを消費した直後は、オートペア系
--- プラグインの join_left/join_right イディオム（utils.key.join_left =
--- "<c-g>U<left>"、join_right = "<c-g>U<right>"）により、必ず直後に
--- <Left> または <Right> が1つ続く。henkan（▽/abbrev）アクティブ中、この
--- <Left>/<Right> は「印字可能ASCIIでないキー」として handle_henkan_key() の
--- 「外部UI（blink.cmp等）が見えていなければここまでの見出しを確定する」
--- フォールバックに到達してしまう。abbrevモードの見出し入力開始直後など、
--- 外部UIにまだ候補が無く is_visible()==false の間にこの合成 <Left> が
--- 来ると、ユーザーが確定を意図していないにもかかわらず見出しが即座に
--- 確定してしまう不具合があった（例："/" 直後に "(" を打つと、本来は
--- ▽( のままのはずが () として即確定してしまう）。
---
--- 対応として、<C-g>U（大文字。<C-g>u 単独のアンドゥ境界とは区別する）を
--- 消費した直後の1回に限り、続く <Left>/<Right> も無視する。henkan
--- アクティブ中はそもそもこの <Left>/<Right> は実バッファ上の実在する
--- ペア文字を跨ぐものではない（abbrevモードは実バッファに一切書き込まない
--- 設計のため）ので、無視しても副作用は無い。henkan 非アクティブ中は
--- このフラグを一切参照しない＝これまで通り、hira_kata_batch/zenei_batch
--- によるカーソルオフセット処理、または通常のネイティブ処理に委ねる。
-local pending_autopair_cursor_move = false
-
 -- 【実機で発見】"z(" によって "（"（全角開き括弧）に変換された直後、
 -- オートペアが自動追加する対になる ")" は、"z" の効果が及ばない独立した
 -- キーとして処理されるため、そのままでは半角の ")" になってしまい、
@@ -1002,14 +981,6 @@ local function on_key(key, _typed)
   if pending_ctrl_g_marker then
     pending_ctrl_g_marker = false
     if key == "u" or key == "U" then
-      -- 大文字 'U' の場合のみ、直後に <Left>/<Right> が1つ続く
-      -- join_left/join_right イディオムとみなし、次のキーで無視する
-      -- （pending_autopair_cursor_move 定義箇所のコメント参照）。
-      -- 小文字 'u'（単独のアンドゥ境界。<Left>/<Right> は続かない）では
-      -- セットしない。
-      if key == "U" then
-        pending_autopair_cursor_move = true
-      end
       return
     end
     -- 'u'/'U' 以外が続いた場合は <C-g>u/<C-g>U パターンではなかった
@@ -1037,19 +1008,6 @@ local function on_key(key, _typed)
   if key == CTRL_G then
     pending_ctrl_g_marker = true
     return
-  end
-
-  -- 【今回の修正】<C-g>U の直後に続く <Left>/<Right>（join_left/
-  -- join_right イディオムの一部）を、henkan アクティブ中に限り無視する
-  -- （pending_autopair_cursor_move 定義箇所のコメント参照）。
-  if pending_autopair_cursor_move then
-    pending_autopair_cursor_move = false
-    if (key == LEFT_TERMCODE or key == RIGHT_TERMCODE) and henkan_state.is_active() then
-      return ""
-    end
-    -- <Left>/<Right> 以外が続いた場合や henkan 非アクティブの場合は
-    -- join_left/join_right イディオムではなかった（または対象外）と
-    -- いうことなので、このキーは下へそのまま読み進めて通常通り処理する。
   end
 
   -- 【実機で発見・カーソル位置のずれ修正】バッチが flush 待ちの間だけ
