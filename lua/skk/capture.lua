@@ -78,7 +78,8 @@ end
 --- lua/skk/init.lua の M.setup() から差し込まれるオプション。
 --- モジュールのトップレベルでは vim.* に触れないプレーンな値のみ
 --- 保持する（この設計方針は他のモジュールと同様）。
----@type { sticky_shift_enabled: boolean, sticky_shift_key: string, egg_like_newline: boolean, cmdline_start_mode: SkkMode }
+---@type { sticky_shift_enabled: boolean, sticky_shift_key: string, egg_like_newline: boolean, cmdline_start_mode: SkkMode,
+---  extra_candidate_next_key: string|nil, extra_candidate_prev_key: string|nil }
 local config = {
   sticky_shift_enabled = true,
   sticky_shift_key = ";",
@@ -99,6 +100,26 @@ local config = {
   -- ここを "hira" 等に変えたい場面が出てくる可能性を見込んで設定項目にして
   -- ある（現時点では setup() からは未公開、コード上のデフォルト変更のみ）。
   cmdline_start_mode = "ascii",
+  -- ▼状態での候補フォーカス移動（CTRL_N/CTRL_P相当）に、追加のキーを
+  -- 割り当てたい場合に使う（例: "<C-Up>"/"<C-Down>"）。Vim key notation の
+  -- 文字列で指定する。nil（既定）なら CTRL_N/CTRL_P のみ。
+  --
+  -- 【なぜ必要か・実機で発見】Telescope 等、自身が <C-n>/<C-p> を実
+  -- キーマップとして占有する外部UIのプロンプト（buftype="prompt"）内では、
+  -- skk.nvim 本体の <C-n>/<C-p>（lua/skk/init.lua の candidate_navigation）
+  -- は事実上機能しない。統合先（外部UI）の設定側で、対象バッファに
+  -- <C-n>/<C-p> をバッファローカルに上書きし、henkanアクティブ時は
+  -- M.focus_next_candidate() 等を呼ぶ、という統合層だけの対処も試みたが、
+  -- ▼状態のキー処理は CTRL_N/CTRL_P/space/x/ホームポジション選択 以外の
+  -- キーをすべて「未対応のキー」とみなし、defer_to_external_ui のガードなし
+  -- に無条件でその場の候補を自動確定してしまう（handle_henkan_key 内の
+  -- catch-all分岐）。これは vim.on_key() が実キーマップの解決より先に発火
+  -- するため、外部UI側のバッファローカルな上書きキーマップが実行される前に
+  -- 確定が起きてしまい、統合層だけでは解決できない（実機で確認）。
+  -- そのため、CTRL_N/CTRL_P と同格の追加キーとして本体側の vim.on_key()
+  -- 処理自体に認識させる必要がある。
+  extra_candidate_next_key = nil,
+  extra_candidate_prev_key = nil,
 }
 
 -- 制御キーの raw keycode。vim.api.nvim_replace_termcodes は使わない
@@ -146,6 +167,15 @@ local pending_del_swallow_count = 0
 local LEFT_TERMCODE = nil
 ---@type string|nil
 local RIGHT_TERMCODE = nil
+-- ▼状態での候補フォーカス移動に使う追加キー（config.extra_candidate_next_key/
+-- extra_candidate_prev_key）の内部キーコード表現。上記 LEFT_TERMCODE 等と
+-- 同様、決め打ちにはできない（ユーザー設定かつ環境依存の内部表現になり
+-- うる）ため、Neovim 自身に問い合わせて取得する（M.setup() 内で遅延評価）。
+-- 未設定なら nil のまま。
+---@type string|nil
+local EXTRA_CANDIDATE_NEXT_TERMCODE = nil
+---@type string|nil
+local EXTRA_CANDIDATE_PREV_TERMCODE = nil
 local CR = string.char(13) -- <CR> (Enter)
 local CTRL_G = string.char(7) -- <C-g>
 local CTRL_Q = string.char(17) -- <C-q>（abbrevモード専用: 全角変換して確定）
@@ -828,6 +858,16 @@ local function handle_henkan_key(key)
       henkan_state.focus_prev()
       return false
     end
+    if EXTRA_CANDIDATE_NEXT_TERMCODE and key == EXTRA_CANDIDATE_NEXT_TERMCODE then
+      -- config.extra_candidate_next_key で指定された追加キー。CTRL_N と
+      -- 全く同じ扱い（詳細は config 定義箇所のコメント参照）。
+      henkan_state.focus_next()
+      return false
+    end
+    if EXTRA_CANDIDATE_PREV_TERMCODE and key == EXTRA_CANDIDATE_PREV_TERMCODE then
+      henkan_state.focus_prev()
+      return false
+    end
     -- ホームポジションキー（a s d f j k l）は、候補一覧ウィンドウが
     -- 実際に表示されている場合に限り、そのページ内の位置に対応する候補を
     -- 選択・即確定する。ウィンドウがまだ表示されていない段階（インライン
@@ -1327,6 +1367,12 @@ function M.setup(opts)
   if opts.abbrev_key ~= nil then
     config.abbrev_key = opts.abbrev_key
   end
+  if opts.extra_candidate_next_key ~= nil then
+    config.extra_candidate_next_key = opts.extra_candidate_next_key
+  end
+  if opts.extra_candidate_prev_key ~= nil then
+    config.extra_candidate_prev_key = opts.extra_candidate_prev_key
+  end
   -- 句読点（ひらがな/カタカナモードでのローマ字 "." "," の変換結果）。
   -- kana_table は module-level のプレーンな Lua テーブル（require ごとの
   -- 使い回し）なので、ここで直接上書きすれば以降の変換すべてに反映される。
@@ -1359,6 +1405,15 @@ function M.setup(opts)
   -- 定義箇所のコメント参照）。
   LEFT_TERMCODE = vim.api.nvim_replace_termcodes("<Left>", true, true, true)
   RIGHT_TERMCODE = vim.api.nvim_replace_termcodes("<Right>", true, true, true)
+  -- ▼状態での候補フォーカス移動の追加キー（config参照）。未設定（nil）なら
+  -- 何もしない（EXTRA_CANDIDATE_*_TERMCODE は nil のままとなり、後述の
+  -- phase=="select" 分岐は素通りする）。
+  EXTRA_CANDIDATE_NEXT_TERMCODE = config.extra_candidate_next_key
+      and vim.api.nvim_replace_termcodes(config.extra_candidate_next_key, true, true, true)
+    or nil
+  EXTRA_CANDIDATE_PREV_TERMCODE = config.extra_candidate_prev_key
+      and vim.api.nvim_replace_termcodes(config.extra_candidate_prev_key, true, true, true)
+    or nil
   ns_id = vim.on_key(on_key, ns_id)
 
   -- バッファのモードとコマンドラインのモードを独立に保つための

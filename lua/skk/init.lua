@@ -38,6 +38,15 @@ local last_skkserv_opts = nil
 ---  キーとしては扱われず、そのまま全角文字に変換される）。
 ---@field abbrev_key string? abbrevモード（ASCII文字列そのものを見出しにする変換）を
 ---  開始するキー。デフォルト "/"。
+---@field extra_candidate_next_key string? 候補一覧（▼）のフォーカス移動（<C-n>相当）に
+---  割り当てる追加キー。Vim key notation の文字列で指定する（例: "<C-Up>"）。
+---  デフォルト nil（CTRL_N/CTRL_Pのみ）。
+---  【なぜ必要か】Telescope 等、自身が <C-n>/<C-p> を実キーマップとして占有する
+---  外部UIのプロンプト内では、candidate_navigation（既定 <C-n>/<C-p>）が事実上
+---  機能しない。統合先の設定だけでは対処できない（vim.on_key() が実キーマップより
+---  先に発火し、無条件の自動確定フォールバックに落ちてしまうため）ので、本体側の
+---  vim.on_key() 自身に、CTRL_N/CTRL_P と同格の追加キーとして認識させる。
+---@field extra_candidate_prev_key string? 上記の <C-p> 相当版。デフォルト nil。
 ---@field sticky_shift_enabled boolean? Sticky-shift（大文字キーを使わずに ▽開始・送り開始点を
 ---  指示する操作）の有効/無効。デフォルト true。
 ---@field sticky_shift_key string? Sticky-shift のトリガーキー。デフォルト ";"。
@@ -342,6 +351,8 @@ function M.setup(opts)
     ctrl_keys = ctrl_keys,
     period = opts.period,
     comma = opts.comma,
+    extra_candidate_next_key = opts.extra_candidate_next_key,
+    extra_candidate_prev_key = opts.extra_candidate_prev_key,
   })
   candidate_window.setup(opts.candidate_window or {})
   mode_indicator.setup({ fg = opts.indicator_fg, bg = opts.indicator_bg })
