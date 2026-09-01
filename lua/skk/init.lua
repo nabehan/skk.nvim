@@ -286,6 +286,25 @@ function M.confirm_henkan()
   return capture.confirm_henkan_if_active()
 end
 
+--- 候補一覧（▼）のフォーカスを次の候補へ進める（<C-n> 相当）。henkanが
+--- 非アクティブなら何もせず false を返す。Telescope 等、自身が <C-n>/<C-p>
+--- を実キーマップとしてバッファローカルに占有していて skk.nvim 本体の
+--- candidate_navigation（既定 <C-n>/<C-p>）が事実上機能しない外部UI側の
+--- 設定から、henkanアクティブ時だけ同期的に候補送りをトリガーしたい場合に
+--- 使う。詳細・使用例は lua/skk/capture.lua の
+--- M.focus_next_candidate_if_active() のコメントを参照。
+---@return boolean moved
+function M.focus_next_candidate()
+  return capture.focus_next_candidate_if_active()
+end
+
+--- 候補一覧（▼）のフォーカスを前の候補へ戻す（<C-p> 相当）。詳細は
+--- M.focus_next_candidate() を参照。
+---@return boolean moved
+function M.focus_prev_candidate()
+  return capture.focus_prev_candidate_if_active()
+end
+
 --- setup({ skkserv = {...} }) に渡された設定のコピーを返す（診断用。
 --- lua/skk/health.lua の :checkhealth skk から使う）。フィールドは
 --- SkkSetupOpts の skkserv と同じ（本ファイル冒頭参照）。skkserv 未設定なら nil。
@@ -487,6 +506,18 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("SkkToggle", function()
     M.toggle()
   end, { desc = "skk.nvim: 現在asciiモードならSkkEnable、そうでなければSkkDisable相当" })
+
+  vim.api.nvim_create_user_command("SkkFocusNextCandidate", function()
+    M.focus_next_candidate()
+  end, {
+    desc = "skk.nvim: 候補一覧（▼）のフォーカスを次の候補へ進める（henkan非アクティブなら何もしない）",
+  })
+
+  vim.api.nvim_create_user_command("SkkFocusPrevCandidate", function()
+    M.focus_prev_candidate()
+  end, {
+    desc = "skk.nvim: 候補一覧（▼）のフォーカスを前の候補へ戻す（henkan非アクティブなら何もしない）",
+  })
 
   vim.api.nvim_create_user_command("SkkCheckSkkserv", function()
     if not last_skkserv_opts then

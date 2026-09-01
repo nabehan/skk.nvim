@@ -702,6 +702,50 @@ function M.confirm_henkan_if_active()
   return true
 end
 
+--- 候補一覧（▼）のフォーカスを次の候補へ進める（<C-n> 相当）。henkanが
+--- 非アクティブ、またはフェーズが "select"（▼）でなければ何もせず false を
+--- 返す（henkan_state.focus_next() 自身が phase による no-op ガードを
+--- 持っているため、このAPIは単なる橋渡し）。
+---
+--- 【なぜ必要か】Telescope 等、自身が <C-n>/<C-p> を実キーマップとして
+--- バッファローカルに占有している外部UIのプロンプト（buftype="prompt"）
+--- 内では、skk.nvim 本体の候補フォーカス移動キーマップ（lua/skk/init.lua
+--- の candidate_navigation、既定 <C-n>/<C-p>）はグローバルな
+--- vim.keymap.set() であり、バッファローカルな外部UI側のマッピングに
+--- 優先順位で負けて発火しない（Neovimの仕様上、バッファローカルは常に
+--- グローバルより優先される）。
+---
+--- このAPIは統合先（外部UI）の設定側で、対象バッファに同じキー
+--- （<C-n>/<C-p>）をバッファローカルに上書きし、henkanアクティブ時はこちらを
+--- 呼び、そうでなければ外部UI本来のアクション（結果一覧の移動等）に委譲する
+--- 形での利用を想定している。例:
+---   vim.keymap.set("i", "<C-n>", function()
+---     if not require("skk").focus_next_candidate() then
+---       -- henkan非アクティブ時は外部UI本来の動作にフォールバック
+---       require("telescope.actions").move_selection_next(bufnr)
+---     end
+---   end, { buffer = bufnr })
+---@return boolean moved 実際にフォーカスを動かせたら true。henkan非アクティブ
+---  なら false（呼び出し側で本来の動作にフォールバックしてよい、という意味）。
+function M.focus_next_candidate_if_active()
+  if not henkan_state.is_active() then
+    return false
+  end
+  henkan_state.focus_next()
+  return true
+end
+
+--- 候補一覧（▼）のフォーカスを前の候補へ戻す（<C-p> 相当）。詳細は
+--- M.focus_next_candidate_if_active() を参照。
+---@return boolean moved
+function M.focus_prev_candidate_if_active()
+  if not henkan_state.is_active() then
+    return false
+  end
+  henkan_state.focus_prev()
+  return true
+end
+
 --- henkan（▽/▼）がアクティブな間のキー処理。
 --- <CR>/<BS>/<C-g> はフェーズに関係なく共通、それ以外はフェーズごとに
 --- 意味が変わる（▼状態の space/x は候補送り、▽状態の q はかな変換確定、等）。
