@@ -274,6 +274,26 @@ candidate_navigation ~
     合はこの機構だけでは不十分なことがある。詳細は |skk.nvim-blink-cmp|
     参照。
 
+                                     *skk.nvim-opt-extra_candidate_next_key*
+extra_candidate_next_key ~
+    候補一覧（▼）のフォーカス移動（<C-n>相当）に割り当てる追加キー。
+    Vim key notation の文字列で指定する（例: "<C-Up>"）。
+    型: string / デフォルト: nil（CTRL_N/CTRL_Pのみ）
+
+    Telescope 等、自身が <C-n>/<C-p> をバッファローカルな実キーマップ
+    として占有する外部UIのプロンプト内では、上記 candidate_navigation
+    （既定 <C-n>/<C-p>）が事実上機能しないことがある（バッファローカ
+    ルは常にグローバルより優先されるため）。統合先の設定だけでは対処
+    できない（vim.on_key() が実キーマップの解決より先に発火し、無条
+    件の自動確定フォールバックに落ちてしまうため）ので、本体側の
+    vim.on_key() 自身に、CTRL_N/CTRL_P と同格の追加キーとして認識さ
+    せる。詳細な経緯は README.md の「Telescope 等、外部UIとの
+    <C-n>/<C-p> 競合」参照。
+
+                                     *skk.nvim-opt-extra_candidate_prev_key*
+extra_candidate_prev_key ~
+    上記の <C-p> 相当版。デフォルト nil。
+
                                                   *skk.nvim-opt-midashi_fg*
 midashi_fg ~
     ▽（見出し語入力中）のインライン表示の文字色（abbrevモードの表示に
@@ -414,6 +434,17 @@ setup() の例: >lua
     の検出・`dictionaries` で読み込んだローカル辞書の結果・skkserv
     の疎通（設定されていれば |:SkkCheckSkkserv| と同様に実際に接続
     を試す）をまとめて診断する。実装は lua/skk/health.lua。
+
+                                                *:SkkFocusNextCandidate*
+:SkkFocusNextCandidate
+    候補一覧（▼）のフォーカスを次の候補へ進める（<C-n>相当）。henkan
+    非アクティブなら何もしない。統合先の設定側から、henkanアクティブ
+    時だけ同期的に候補送りをトリガーしたい場合に使う
+    （|skk.nvim-opt-extra_candidate_next_key| 参照）。
+
+                                                *:SkkFocusPrevCandidate*
+:SkkFocusPrevCandidate
+    上記の <C-p> 相当版。
 
 ==============================================================================
 11. ハイライトグループ                                *skk.nvim-highlights*

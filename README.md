@@ -118,6 +118,13 @@ require("skk").setup({
   -- blink.cmp 等の setup() を済ませておく必要がある。デフォルト有効。
   -- candidate_navigation = { enabled = true, next_key = "<C-n>", prev_key = "<C-p>" },
 
+  -- <C-n>/<C-p>（上記 candidate_navigation）が、Telescope 等バッファローカルに
+  -- <C-n>/<C-p> の実キーマップを持つ外部UIのプロンプト内では効かない場合の
+  -- 追加の候補フォーカス移動キー。詳細・背景は後述の「Telescope 等、外部UIとの
+  -- <C-n>/<C-p> 競合」参照。省略時 nil（追加キーなし）。
+  -- extra_candidate_next_key = "<C-Up>",
+  -- extra_candidate_prev_key = "<C-Down>",
+
   user_dictionary = "~/.local/share/skk/SKK-JISYO.user", -- 個人辞書（学習）ファイルのパス。省略時この値
 })
 ```
@@ -127,6 +134,8 @@ require("skk").setup({
 初期モードは `半角英数`（SKK 実質 OFF）。挿入モードで `<C-j>` を押すとひらがなモードに入る。以降は前述のモード遷移表（`l`/`q`/`L`）でモードを切り替えながら入力する。`:SkkMode` コマンドで現在のモードを確認できる。
 
 他プラグインとの連携用に、`require("skk").enable()`/`disable()`/`toggle()`/`is_enabled()`（skkeleton の `<Plug>(skkeleton-enable)` 等相当）と、対応する `:SkkEnable`/`:SkkDisable`/`:SkkToggle` コマンドも用意している。`enable()` はひらがなモードへ、`disable()` は半角英数モード（henkan進行中なら先にキャンセル）へ遷移する。
+
+候補一覧（▼）のフォーカス移動用に、`require("skk").focus_next_candidate()`/`focus_prev_candidate()`（henkan非アクティブなら何もせず `false` を返す）と、対応する `:SkkFocusNextCandidate`/`:SkkFocusPrevCandidate` コマンドも用意している。統合先の設定側から、henkanアクティブ時だけ同期的に候補送りをトリガーしたい場合に使う（ただし後述の「Telescope 等、外部UIとの `<C-n>`/`<C-p>` 競合」で説明する理由により、キー入力経由の統合には `extra_candidate_next_key`/`extra_candidate_prev_key` の方が適している場合が多い）。
 
 `:checkhealth skk` で、Neovimのバージョン要件・`setup()` の実行状況・blink.cmp（任意）の検出・ローカル辞書の読み込み結果・skkservの疎通を診断できる。
 
@@ -393,6 +402,20 @@ lua/skk/
 未確定のローマ字断片（例: `"k"` だけ打った直後、まだ変換表のどのエントリにも完全一致していない状態）は、実バッファにそのまま普通の文字として表示しておき、変換が確定した瞬間にその文字数ぶんを消してかなに置き換える方式にしている。実装がシンプルで、何も表示されない不安がないという利点がある一方、本来の SKK の見た目とは異なる。**これは `▽`/`▼`（henkan、下記参照）とは別物**で、henkan 側は `henkan/preedit.lua` による extmark 仮想テキスト表示に既に置き換わっている。
 
 実際のバッファ書き換え (`nvim_buf_set_text`) は `vim.on_key()` のコールバック内で直接行わず、`vim.schedule()` で1ティック遅延させている。[blink.cmp との統合作業](https://github.com/nabehan/nvim-config-blink-skkeleton)で `E565: Not allowed to change text or change window` という textlock エラーを複数回踏んだ教訓から、同種の制約下にある可能性を考慮した予防的な対応。
+
+### Telescope 等、外部UIとの `<C-n>`/`<C-p>` 競合と `extra_candidate_next_key`/`extra_candidate_prev_key`（実機で発見・重要）
+
+候補一覧（▼）のフォーカス移動（既定 `<C-n>`/`<C-p>`）は `candidate_navigation` オプションにより、`vim.on_key()` ではなく実際の `vim.keymap.set()`（挿入モードの**グローバル**キーマップ）で実装している。これは元々 blink.cmp 等、挿入モードに `<C-n>`/`<C-p>` の実キーマップを張るプラグインとの共存のため（`setup()` 時点で既に張られていたマッピングを読み取って保存し、▼状態以外はそちらへ委譲する。判定ロジック本体は `lua/skk/candidate_nav.lua`）。
+
+**問題（実機で発見）**: [Telescope](https://github.com/nvim-telescope/telescope.nvim) のプロンプト（`buftype="prompt"`）は自身が `<C-n>`/`<C-p>` を**バッファローカルな**実キーマップ（`move_selection_next`/`move_selection_previous`、結果一覧の選択移動）として持っている。Neovim の仕様上バッファローカルは常にグローバルより優先されるため、Telescopeのプロンプト内では `candidate_navigation` のグローバルキーマップは事実上発火せず、▼状態で `<C-n>`/`<C-p>` を押しても候補は動かない（[nvim-config-blink-skknvim](https://github.com/nabehan/nvim-config-blink-skknvim) での実機検証で発見）。
+
+**最初に試して機能しなかった対策（統合層のみでの解決）**: skk.nvim本体には手を入れず、Telescope側の `FileType` オートコマンドで対象バッファに `<C-n>`/`<C-p>` をバッファローカルに上書きし、henkanアクティブなら `M.focus_next_candidate()`/`M.focus_prev_candidate()`（後述、henkan非アクティブなら `false` を返すだけの橋渡し関数）を呼び、そうでなければTelescope本来の `move_selection_next`/`move_selection_previous` へフォールバックする——という、`<C-j>`（下記参照）と同じ「統合先バッファでの上書き」パターンを試したが、実機では効果がなかった（表面上は何も変わらず、候補は即時確定してTelescope本来の選択移動が始まった）。
+
+原因は `capture.lua` の ▼状態キー処理にある。`CTRL_N`/`CTRL_P`/`space`/`x`/ホームポジション選択**以外**のキーが来た場合、`▽` 状態のキー処理と異なり `defer_to_external_ui` のガードなしに**無条件で**その場の候補を確定する catch-all 分岐がある。`vim.on_key()` は実キーマップの解決より**先に**発火するため、Telescope側の上書きキーマップが実行される前にこの catch-all 分岐が先に確定を終えてしまい、統合層（Telescope側の設定）だけでは原理的に解決できない。試しに `<C-n>`/`<C-p>` の代わりに未使用の `<M-n>`/`<M-p>` を同じ統合層方式で割り当てても、同じ理由で同様に機能しなかった。
+
+**最終的な解決策**: `capture.lua` 自身の ▼状態キー処理に、`CTRL_N`/`CTRL_P` と同格の追加キーとして認識させる `extra_candidate_next_key`/`extra_candidate_prev_key` オプションを追加した（前述「使い方」参照）。`vim.on_key()` 自身がこれらのキーを最初に処理するため、外部UI側の実キーマップとの競合レースも、catch-all 分岐への意図しない落下も、どちらも原理的に発生しない。[nvim-config-blink-skknvim](https://github.com/nabehan/nvim-config-blink-skknvim) では `extra_candidate_next_key = "<C-Up>"`/`extra_candidate_prev_key = "<C-Down>"` を設定し、`<C-n>`/`<C-p>` 自体（ユーザーの手癖）には手を加えずにTelescope内でも候補移動ができることを実機で確認済み。Telescope側の `config.lua` は結局 `<C-j>` の上書きのみに戻し、`<C-n>`/`<C-p>` の上書きは削除している。
+
+なお、この検証過程でヘッドレス環境の `nvim --server --remote-send` の限界も判明した。`<C-n>`/`<M-n>` 等 Ctrl/Alt 修飾キーの送信で、`vim.on_key()` が実際に観測するバイト列が `vim.api.nvim_replace_termcodes()` の出力や、実端末からの入力と一致しないことがある（当方が一切変更していない、既存の `candidate_navigation` 機能単体でのヘッドレステストでも同じ症状を再現し、原因を特定した）。修飾キーが絡む検証は、ヘッドレスでの結果を過信せず実機で確認する必要がある。
 
 ### nvim-autopairs との相性問題（実機で発見・重要）
 
