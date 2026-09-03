@@ -122,8 +122,14 @@ require("skk").setup({
   -- <C-n>/<C-p> の実キーマップを持つ外部UIのプロンプト内では効かない場合の
   -- 追加の候補フォーカス移動キー。詳細・背景は後述の「Telescope 等、外部UIとの
   -- <C-n>/<C-p> 競合」参照。省略時 nil（追加キーなし）。
-  -- extra_candidate_next_key = "<C-Up>",
-  -- extra_candidate_prev_key = "<C-Down>",
+  -- Ctrl+矢印キー等、CSIシーケンスとして1つの塊で届くキーを推奨（実機で確認
+  -- 済み）。Alt修飾キーや Ctrl+記号は端末依存の符号化の揺れで ESC と文字が
+  -- 分割されて届くことがあり、この用途には不向き。<C-j>/<C-k> のような
+  -- Vim/Neovim組み込みの意味を持つキー（<CR>相当・ダイグラフ入力）も、
+  -- ▼状態以外での押下時に組み込み動作へ素通りしてしまうため避けること
+  -- （詳細は同節参照）。
+  -- extra_candidate_next_key = "<C-Right>",
+  -- extra_candidate_prev_key = "<C-Left>",
 
   user_dictionary = "~/.local/share/skk/SKK-JISYO.user", -- 個人辞書（学習）ファイルのパス。省略時この値
 })
@@ -413,7 +419,16 @@ lua/skk/
 
 原因は `capture.lua` の ▼状態キー処理にある。`CTRL_N`/`CTRL_P`/`space`/`x`/ホームポジション選択**以外**のキーが来た場合、`▽` 状態のキー処理と異なり `defer_to_external_ui` のガードなしに**無条件で**その場の候補を確定する catch-all 分岐がある。`vim.on_key()` は実キーマップの解決より**先に**発火するため、Telescope側の上書きキーマップが実行される前にこの catch-all 分岐が先に確定を終えてしまい、統合層（Telescope側の設定）だけでは原理的に解決できない。試しに `<C-n>`/`<C-p>` の代わりに未使用の `<M-n>`/`<M-p>` を同じ統合層方式で割り当てても、同じ理由で同様に機能しなかった。
 
-**最終的な解決策**: `capture.lua` 自身の ▼状態キー処理に、`CTRL_N`/`CTRL_P` と同格の追加キーとして認識させる `extra_candidate_next_key`/`extra_candidate_prev_key` オプションを追加した（前述「使い方」参照）。`vim.on_key()` 自身がこれらのキーを最初に処理するため、外部UI側の実キーマップとの競合レースも、catch-all 分岐への意図しない落下も、どちらも原理的に発生しない。[nvim-config-blink-skknvim](https://github.com/nabehan/nvim-config-blink-skknvim) では `extra_candidate_next_key = "<C-Up>"`/`extra_candidate_prev_key = "<C-Down>"` を設定し、`<C-n>`/`<C-p>` 自体（ユーザーの手癖）には手を加えずにTelescope内でも候補移動ができることを実機で確認済み。Telescope側の `config.lua` は結局 `<C-j>` の上書きのみに戻し、`<C-n>`/`<C-p>` の上書きは削除している。
+**最終的な解決策**: `capture.lua` 自身の ▼状態キー処理に、`CTRL_N`/`CTRL_P` と同格の追加キーとして認識させる `extra_candidate_next_key`/`extra_candidate_prev_key` オプションを追加した（前述「使い方」参照）。`vim.on_key()` 自身がこれらのキーを最初に処理するため、外部UI側の実キーマップとの競合レースも、catch-all 分岐への意図しない落下も、どちらも原理的に発生しない。
+
+**`extra_candidate_next_key`/`extra_candidate_prev_key` に指定するキーの選び方（実機で発見・重要）**:
+
+- 最初に `<C-Up>`/`<C-Down>` で実機確認したが、ホームポジションから遠いという理由で `<M-n>`/`<M-p>`（Alt+n/p、ホームポジション直下でTelescope側とも無衝突）を試したところ、**実機では機能しなかった**（例: 「人」を選択中に `<M-n>` を押すと、候補移動ではなく「人」がそのまま確定し、直後に `n` が新しいローマ字入力として処理され「人n」のような結果になった）。原因はAlt修飾キーの符号化方式にある。多くの端末はAlt+文字を「ESCを送ってから元の文字を送る」という2バイト方式（ESCプレフィックス）で表現しており、Neovimは短い `ttimeoutlen` の間にこの2バイトが揃って届けば1つの `<M-x>` として解釈するが、タイミングや端末の実装によっては ESC と文字が**別々のキー入力として** `vim.on_key()` に届いてしまうことがある。ESC 単体は ▼状態の catch-all 分岐（前述）に落ちて即座に確定し、続く文字は確定後の新しい入力として処理されてしまう。
+- `<C-.>`/`<C-,>`（Ctrl+ピリオド/カンマ、ホームポジションに近い）も試したが、端末によって結果が割れた（実機報告: Alacrittyでは動作、Konsoleでは動作せず）。Ctrl+印字可能文字の符号化はKittyキーボードプロトコル対応の有無等、端末依存の部分が大きい。
+- 矢印キー系（`<C-Up>`/`<C-Down>`/`<C-Left>`/`<C-Right>`）はCSIエスケープシーケンスという、あらかじめ長さも内容も決まった「1つの塊」で送られるため、この種の分割が原理的に起きない——これが最初から安定して動いていた理由でもある。
+- **`<C-j>`/`<C-k>` のように、Vim/Neovim組み込みの意味を持つ ASCII 制御コードを選ぶ場合は要注意（実機で発見・重要）**: これらのキー自体は単一バイトの生の制御コードなので符号化面での分割リスクはない。ただし `enter_key`（既定 `<C-j>`）を他のキー（例: `<C-\>`）に変更し、`<C-j>` を `extra_candidate_next_key` に転用するような構成では、`<C-j>` は skk.nvim 側の実キーマップでは**もはやどこにも占有されなくなる**。`extra_candidate_next_key`/`extra_candidate_prev_key` は `vim.on_key()` 経由の処理であり、henkan の ▼状態（`phase=="select"`）でしか認識されないため、それ以外の場面（henkan非アクティブ、または ▽ 状態）で `<C-j>`/`<C-k>` を押すと、Neovim組み込みの既定動作へ素通りしてしまう。`<C-j>` は挿入モードで `<CR>`（改行）と等価に扱われる組み込み動作を持ち、`<C-k>` はダイグラフ入力（例: `<C-k>a:` → `ä`）を起動する組み込みキーである（いずれも実機・ヘッドレス両方で動作を確認済み）。意図せず押してしまうと、無警告の改行挿入や、次のキー入力がダイグラフ待ちに吸われてしまう不具合につながりうる。以前 `enter_key = "<C-j>"` だった頃はこの組み込み動作を実キーマップが常時覆い隠していたため問題化しなかったが、`extra_candidate_next_key`/`extra_candidate_prev_key` は ▼状態限定の `vim.on_key()` 処理でしかなく、同じようには「常時占有」できない。この種のキーを選ぶ場合は、`▼`状態以外での押下時にNeovim側が持つ既定動作の有無を事前に確認すること。
+
+[nvim-config-blink-skknvim](https://github.com/nabehan/nvim-config-blink-skknvim) では最終的に `extra_candidate_next_key = "<C-Right>"`/`extra_candidate_prev_key = "<C-Left>"` に落ち着いている（`<C-n>`/`<C-p>` 自体、ユーザーの手癖には手を加えていない）。Telescope側の `config.lua` は結局 `enter_key`（`<C-\>` または `<C-j>`、設定による）の上書きのみに戻し、`<C-n>`/`<C-p>` の上書きは削除している。
 
 なお、この検証過程でヘッドレス環境の `nvim --server --remote-send` の限界も判明した。`<C-n>`/`<M-n>` 等 Ctrl/Alt 修飾キーの送信で、`vim.on_key()` が実際に観測するバイト列が `vim.api.nvim_replace_termcodes()` の出力や、実端末からの入力と一致しないことがある（当方が一切変更していない、既存の `candidate_navigation` 機能単体でのヘッドレステストでも同じ症状を再現し、原因を特定した）。修飾キーが絡む検証は、ヘッドレスでの結果を過信せず実機で確認する必要がある。
 
