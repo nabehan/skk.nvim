@@ -307,6 +307,17 @@ extra_candidate_next_key ~
     どの実キーマップにも占有されなくなった構成で特に注意。実機・
     ヘッドレス両方で動作を確認済み）。
 
+    このキー選定の注意点は extra_candidate_next_key/prev_key に限ら
+    ず、enter_key/buffer_enter_key/cmdline_enter_key 等、本プラグイン
+    のあらゆるキー設定項目に共通する（実機で発見：enter_key を
+    <C-;> に変更したところ、Konsole では機能しなかった）。また、
+    端末側の符号化だけでなく、OS・デスクトップ環境・入力メソッド
+    フレームワーク側がそのキーをグローバルショートカットとして横取
+    りしているケースもある（例: KDE Plasma、fcitx5 の Clipboard アド
+    オンは既定で <C-;> にクリップボード履歴呼び出しを割り当ててお
+    り、Neovimにキーが届く前に消費してしまうことがあった）。特定の
+    キーが効かない場合は、端末の符号化に加えてこれらも確認すること。
+
                                      *skk.nvim-opt-extra_candidate_prev_key*
 extra_candidate_prev_key ~
     上記の <C-p> 相当版。デフォルト nil。
