@@ -1,5 +1,7 @@
 # skk.nvim
 
+English | [日本語](README.md)
+
 A SKK (Japanese input method) plugin implemented purely in Lua for Neovim only (not Vim-compatible), with no dependency on denops or any external process.
 
 **Current status:** In addition to romaji→kana/katakana conversion and switching between the 4 modes (with a mode indicator shown at the cursor on each switch), it supports dictionary conversion (`▽`/`▼`, with/without okurigana, and abbrev), a candidate-selection window (with `<C-n>`/`<C-p>` focus movement), word registration (a UI that supports recursive word registration via recursive calls to `vim.fn.input()`), sticky-shift, a personal dictionary (learning), merging multiple dictionaries, and SKK server integration. Large dictionary files are loaded with asynchronous, lazy parsing. Beyond insert-mode buffers, it also supports romaji→kana conversion, the 4 mode switches, the mode indicator, dictionary conversion (`▽`/`▼`, candidate window), and word registration in **command-line mode** (`:`/`/`). The built-in terminal is intentionally not supported (see below).
